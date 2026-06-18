@@ -146,3 +146,52 @@ class TestReporterIntegration:
         # Reporter should use fallback when agency_name is None
         agency_name = site.get('agency_name') or 'Police Department'
         assert agency_name == 'Police Department'
+
+
+class TestEndToEndPipeline:
+    """Integration test simulating full image processing pipeline."""
+
+    def test_pipeline_produces_agency_name(self):
+        """Verify complete pipeline flow: address -> city -> agency_name."""
+        # Simulate what happens in process_and_organize_images()
+
+        # Step 1: Reverse geocoding returns full address
+        full_address = "123 Main St, Lansing, Ingham County, Michigan, United States"
+
+        # Step 2: Extract city
+        city = extract_city_from_address(full_address)
+
+        # Step 3: Generate agency_name
+        agency_name = f"{city} Police Department" if city else None
+
+        # Verify complete output
+        assert city == "Lansing"
+        assert agency_name == "Lansing Police Department"
+
+    def test_pipeline_handles_geocoding_failure(self):
+        """Verify pipeline handles when reverse geocoding fails."""
+        # Simulate coordinate-only fallback address
+        full_address = "Site Coordinate (42.7335, -84.5555)"
+
+        # Step 1: Extract city (should return None)
+        city = extract_city_from_address(full_address)
+
+        # Step 2: Generate agency_name (should be None)
+        agency_name = f"{city} Police Department" if city else None
+
+        # Verify proper null handling
+        assert city is None
+        assert agency_name is None
+
+    def test_different_city_formats(self):
+        """Verify extraction works for various city name formats."""
+        test_cases = [
+            ("456 Oak Ave, San Francisco, San Francisco County, California, United States", "San Francisco"),
+            ("100 Main St, Saint-Étienne, Loire, France", "Saint-Étienne"),
+            ("789 First Ave, New York, New York County, New York, United States", "New York"),
+            ("Site Coordinate (0.0, 0.0)", None),
+        ]
+
+        for address, expected_city in test_cases:
+            city = extract_city_from_address(address)
+            assert city == expected_city, f"Failed for address: {address}"
