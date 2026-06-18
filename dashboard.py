@@ -496,7 +496,24 @@ with tab1:
                     # We show the image and capture click
                     # Force full refresh by including image path in key
                     canvas_key = f"canvas_{selected_site['site_id']}_{hash(st.session_state.active_bg_image)}"
-                    click = streamlit_image_coordinates(display_img_path, key=canvas_key, width=600)
+
+                    # Check image dimensions to preserve portrait orientation
+                    try:
+                        with Image.open(display_img_path) as img_check:
+                            img_width, img_height = img_check.size
+                        # Use height for portrait images (height > width), width for landscape
+                        # Constrain to max 600px to keep UI manageable
+                        if img_height > img_width:
+                            # Portrait orientation - use height constraint
+                            display_size = min(600, img_height)
+                            click = streamlit_image_coordinates(display_img_path, key=canvas_key, height=display_size)
+                        else:
+                            # Landscape or square - use width constraint
+                            display_size = min(600, img_width)
+                            click = streamlit_image_coordinates(display_img_path, key=canvas_key, width=display_size)
+                    except Exception:
+                        # Fallback to width-based display if dimension check fails
+                        click = streamlit_image_coordinates(display_img_path, key=canvas_key, width=600)
 
                     if click:
                         click_key = f"{selected_site['site_id']}_{st.session_state.active_bg_image}_{click.get('x')}_{click.get('y')}"
