@@ -321,6 +321,18 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
     """
     Scan source_dir for images, cluster by GPS, reverse-geocode,
     create subdirectories in output_dir, copy files, and return structure.
+
+    Returns:
+        list: site_data with structure:
+            {
+                'site_id': 'SITE-001',
+                'address': 'Full reverse-geocoded address',
+                'city': 'Extracted city name or None',
+                'agency_name': '{City} Police Department or None',
+                'latitude': float,
+                'longitude': float,
+                'images': [list of image metadata]
+            }
     """
     def _report_progress(percent, message):
         if progress_callback:
