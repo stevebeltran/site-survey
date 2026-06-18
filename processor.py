@@ -184,13 +184,14 @@ def extract_city_from_address(full_address):
     Handles various address formats:
     - "123 Main St, Lansing, Ingham County, Michigan, United States"
     - "Lake Street, Zionsville, Boone County, Indiana, United States"
+    - "Zionsville Police Department, 1075 Parkway Drive, ..." -> Returns "Zionsville"
     - "Site Coordinate (42.7335, -84.5555)" -> Returns None
 
     Args:
         full_address (str or None): Full reverse-geocoded address string
 
     Returns:
-        str: City/town name, or None if not found or address is invalid
+        str: City/town name (without "Police Department" suffix), or None if not found or address is invalid
     """
     if not full_address:
         return None
@@ -252,8 +253,13 @@ def extract_city_from_address(full_address):
         if any(indicator in part_lower for indicator in street_indicators):
             continue
 
-        # This is likely the city
-        return part
+        # This is likely the city. Remove "Police Department" suffix if present
+        # (handles cases where reverse geocode returns "City Police Department")
+        city = part.strip()
+        if city.lower().endswith(" police department"):
+            city = city[:-len(" police department")].strip()
+
+        return city if city else None
 
     return None
 
