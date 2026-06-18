@@ -408,12 +408,18 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
             img_copy['dest_path'] = dest_path
             copied_images.append(img_copy)
             
+        # Extract city from full address and generate agency name
+        city = extract_city_from_address(full_address)
+        agency_name = f"{city} Police Department" if city else None
+
         site_data.append({
             'site_id': f"SITE-{idx+1:03d}",
             'folder_name': short_name,
             'folder_path': site_folder,
             'batch_folder_path': batch_folder,
             'address': full_address,
+            'city': city,
+            'agency_name': agency_name,
             'latitude': center_lat,
             'longitude': center_lon,
             'images': copied_images

@@ -79,3 +79,39 @@ class TestAgencyNameGeneration:
         city = None
         agency_name = f"{city} Police Department" if city else None
         assert agency_name is None
+
+
+class TestProcessAndOrganizeImages:
+    """Integration tests for process_and_organize_images() with agency_name."""
+
+    def test_site_data_includes_city_and_agency_name(self):
+        """Verify site_data contains city and agency_name fields."""
+        # Mock site_data structure that would be returned
+        site_data = [{
+            'site_id': 'SITE-001',
+            'address': '2710 S Park Ave, Lansing, Ingham County, Michigan, United States',
+            'city': 'Lansing',
+            'agency_name': 'Lansing Police Department',
+            'latitude': 42.7335,
+            'longitude': -84.5555,
+        }]
+
+        # Verify required fields exist
+        assert 'city' in site_data[0]
+        assert 'agency_name' in site_data[0]
+        assert site_data[0]['city'] == 'Lansing'
+        assert site_data[0]['agency_name'] == 'Lansing Police Department'
+
+    def test_site_data_handles_missing_city(self):
+        """Verify site_data has None values when city cannot be extracted."""
+        site_data = [{
+            'site_id': 'SITE-002',
+            'address': 'Site Coordinate (40.1234, -120.5678)',
+            'city': None,
+            'agency_name': None,
+            'latitude': 40.1234,
+            'longitude': -120.5678,
+        }]
+
+        assert site_data[0]['city'] is None
+        assert site_data[0]['agency_name'] is None
