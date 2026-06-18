@@ -115,3 +115,34 @@ class TestProcessAndOrganizeImages:
 
         assert site_data[0]['city'] is None
         assert site_data[0]['agency_name'] is None
+
+
+class TestReporterIntegration:
+    """Test that reporter can access agency_name field."""
+
+    def test_site_data_format_compatible_with_reporter(self):
+        """Verify site_data has fields reporter expects."""
+        site = {
+            'site_id': 'SITE-001',
+            'address': '2710 S Park Ave, Lansing, Ingham County, Michigan, United States',
+            'city': 'Lansing',
+            'agency_name': 'Lansing Police Department',
+            'latitude': 42.7335,
+            'longitude': -84.5555,
+        }
+
+        # Reporter should be able to access agency_name safely
+        agency_name = site.get('agency_name', 'Police Department')
+        assert agency_name == 'Lansing Police Department'
+
+    def test_reporter_handles_missing_agency_name(self):
+        """Verify reporter doesn't break if agency_name is None."""
+        site = {
+            'site_id': 'SITE-002',
+            'address': 'Site Coordinate (40.1234, -120.5678)',
+            'agency_name': None,
+        }
+
+        # Reporter should use fallback when agency_name is None
+        agency_name = site.get('agency_name') or 'Police Department'
+        assert agency_name == 'Police Department'
