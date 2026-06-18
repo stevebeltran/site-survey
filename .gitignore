@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Output directories
+processed_sites/
+output/
+*.log
+
+# Test data
+mock_raw_images/
+images/
+
+# Backups
+*.bundle
+*.bak
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local configuration
+.env
+.env.local
