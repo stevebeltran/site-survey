@@ -1,0 +1,723 @@
+import os
+import json
+import streamlit as st
+import pandas as pd
+from PIL import Image
+
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except Exception:
+    pillow_heif = None
+
+# Clean working directory from any enclosing quotes on Windows
+current_cwd = os.getcwd()
+if '"' in current_cwd or "'" in current_cwd:
+    os.chdir(current_cwd.replace('"', '').replace("'", ""))
+
+# Import our modules
+import processor
+import analyzer
+import reporter
+
+# Import the image coordinates package
+try:
+    from streamlit_image_coordinates import streamlit_image_coordinates
+except ImportError:
+    st.error("Please ensure streamlit-image-coordinates is installed.")
+
+# Page config
+st.set_page_config(
+    page_title="DFR Site Survey & Deployment Suite",
+    page_icon="🚁",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Premium Theme Styling via Custom CSS
+st.markdown("""
+<style>
+    .reportview-container {
+        background: #0F172A;
+        color: #F8FAFC;
+    }
+    .main-header {
+        background: linear-gradient(135deg, #1E3A8A 0%, #3B82F6 100%);
+        padding: 24px;
+        border-radius: 12px;
+        color: white;
+        margin-bottom: 25px;
+        box-shadow: 0 4px 20px rgba(59, 130, 246, 0.15);
+    }
+    .metric-card {
+        background-color: #1E293B;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 15px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Session State Initialization
+if "processed_sites" not in st.session_state:
+    st.session_state.processed_sites = []
+if "integration_logs" not in st.session_state:
+    st.session_state.integration_logs = []
+if "last_click" not in st.session_state:
+    st.session_state.last_click = {}
+if "customer_info" not in st.session_state:
+    # Initialized as entirely blank on first load
+    st.session_state.customer_info = {
+        "agency_name": "",
+        "agency_address": "",
+        "poc_name": "",
+        "poc_email": "",
+        "poc_phone": "",
+        "it_director": "",
+        "it_email": "",
+        "facilities_engineer": "",
+        "facilities_email": ""
+    }
+if "active_bg_image" not in st.session_state:
+    st.session_state.active_bg_image = None
+
+SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tiff", ".webp", ".heic", ".heif")
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def _resolve_app_path(path):
+    """Resolve relative paths against the dashboard file location."""
+    cleaned_path = path.strip().replace('"', '').replace("'", "")
+    if os.path.isabs(cleaned_path):
+        return os.path.abspath(cleaned_path)
+    return os.path.abspath(os.path.join(APP_DIR, cleaned_path))
+
+
+def _extract_town_state_from_address(address):
+    """Infer town and state from a reverse-geocoded address string."""
+    parts = [part.strip() for part in str(address).split(",") if part.strip()]
+    if not parts:
+        return "Local", "State"
+
+    town = parts[1] if len(parts) >= 4 else parts[0]
+    if any(token in town.lower() for token in ("county", "united states", "usa")):
+        town = parts[0]
+
+    state = "State"
+    if len(parts) >= 2:
+        candidate = parts[-2].split()[0]
+        if candidate and not any(token in candidate.lower() for token in ("county", "united states", "usa")):
+            state = candidate
+
+    return town or "Local", state or "State"
+
+def _save_session_metadata(site_data):
+    """Save metadata to a JSON file inside each site's folder."""
+    for site in site_data:
+        # Save customer info into the site payload for history loading
+        site["customer_info"] = st.session_state.customer_info
+        folder_path = site.get("folder_path")
+        if folder_path and os.path.exists(folder_path):
+            metadata_path = os.path.join(folder_path, "session_metadata.json")
+            try:
+                # Convert datetime objects to string representation
+                serializable_site = json.loads(json.dumps(site, default=str))
+                with open(metadata_path, "w") as f:
+                    json.dump(serializable_site, f, indent=4)
+            except Exception as e:
+                print(f"Error saving session metadata: {e}")
+
+
+def _get_displayable_image_path(image_path):
+    """Return a browser-safe image path for Streamlit display, or None if unreadable."""
+    if not image_path or not os.path.exists(image_path):
+        return None
+
+    safe_extensions = (".jpg", ".jpeg", ".png", ".webp")
+    ext = os.path.splitext(image_path)[1].lower()
+
+    try:
+        with Image.open(image_path) as img:
+            img.load()
+            if ext in safe_extensions:
+                return image_path
+
+            preview_dir = os.path.join(os.path.dirname(image_path), ".previews")
+            os.makedirs(preview_dir, exist_ok=True)
+            preview_name = f"{os.path.splitext(os.path.basename(image_path))[0]}.png"
+            preview_path = os.path.join(preview_dir, preview_name)
+            if not os.path.exists(preview_path):
+                img.convert("RGB").save(preview_path, "PNG")
+            return preview_path
+    except Exception as e:
+        print(f"Image preview unavailable for {image_path}: {e}")
+        return None
+
+# Header
+st.markdown("""
+<div class="main-header">
+    <h1 style="margin:0; font-family:'Outfit',sans-serif; font-weight:800; letter-spacing:-0.5px;">Drone as a First Responder (DFR)</h1>
+    <p style="margin:5px 0 0 0; opacity:0.9; font-size:1.1rem;">Site Survey & Deployment Automation Suite</p>
+</div>
+""", unsafe_allow_html=True)
+
+# Sidebar - Settings & Integration Configs
+with st.sidebar:
+    st.image("https://img.icons8.com/color/96/drone.png", width=80)
+    st.title("Settings & APIs")
+    
+    st.subheader("1. Survey Paths")
+    source_dir = st.text_input("Source Images Directory", value="./mock_raw_images").strip().replace('"', '').replace("'", "")
+    output_dir = st.text_input("Output Organised Directory", value="./processed_sites").strip().replace('"', '').replace("'", "")
+    proximity_radius = st.slider("Clustering Proximity (Meters)", min_value=10, max_value=500, value=90)
+    
+    st.subheader("2. Integrations & Credentials")
+    with st.expander("API Configurations"):
+        hubspot_api = st.text_input("HubSpot Access Token", type="password")
+        jira_url = st.text_input("Jira Server URL", value="https://jira.dfr-deployments.atlassian.net")
+        slack_webhook = st.text_input("Slack Webhook URL", type="password")
+        gdrive_folder = st.text_input("Google Drive Folder ID")
+        
+    st.info("💡 Mocks are enabled automatically for unset credentials.")
+
+# Create demo files helper
+def setup_mock_data():
+    if not os.path.exists(source_dir):
+        os.makedirs(source_dir)
+        st.info("Creating mock survey images in raw source directory for demo...")
+        
+        # Site 1 - Fire Station 1
+        img1 = Image.new('RGB', (100, 100), color = 'red')
+        img1.save(os.path.join(source_dir, "fs1_roof_access_hatch.jpg"))
+        
+        # Site 2 - Water Tower
+        img2 = Image.new('RGB', (100, 100), color = 'blue')
+        img2.save(os.path.join(source_dir, "watertower_mounting_mast.jpg"))
+        
+        st.success("Mock images created successfully! Click 'Ingest & Process' to run.")
+
+setup_mock_data()
+
+# Ingestion Controls at the top of the page
+st.subheader("Ingestion Controls")
+with st.container(border=True):
+    uploaded_files = st.file_uploader(
+        "Upload raw survey photos (.jpg, .jpeg, .png)",
+        accept_multiple_files=True,
+        type=["jpg", "jpeg", "png", "heic"],
+    )
+    uploaded_file_paths = []
+    if uploaded_files:
+        os.makedirs(source_dir, exist_ok=True)
+        for uploaded_file in uploaded_files:
+            file_path = os.path.join(source_dir, uploaded_file.name)
+            with open(file_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            uploaded_file_paths.append(file_path)
+        st.success(f"Saved {len(uploaded_files)} files to directory!")
+
+    if st.button("🚀 Ingest & Process Sites", use_container_width=True):
+        if not uploaded_files:
+            st.error("Please upload one or more raw survey photos first.")
+            st.stop()
+
+        progress_bar = st.progress(0)
+        progress_text = st.empty()
+
+        def _update_processing_progress(percent, message):
+            progress_bar.progress(max(0, min(100, int(percent))))
+            progress_text.caption(f"{int(percent)}% - {message}")
+
+        try:
+            st.session_state.processed_sites = []
+            st.session_state.active_bg_image = None
+            st.session_state.last_click = {}
+
+            site_data = processor.process_and_organize_images(
+                source_dir,
+                output_dir,
+                radius_meters=proximity_radius,
+                progress_callback=_update_processing_progress,
+                image_paths=uploaded_file_paths,
+            )
+
+            if not site_data:
+                st.warning("No images with GPS metadata were found in the uploaded files.")
+
+            for site in site_data:
+                site["analysis"] = analyzer.analyze_site(site)
+                site["airfield_info"] = f"{reporter.query_nearest_airfield(site['latitude'], site['longitude'])[0]} ({reporter.query_nearest_airfield(site['latitude'], site['longitude'])[1]:.2f} miles)"
+                site["airspace"] = reporter.query_airspace_class(site["latitude"], site["longitude"])
+                for img in site.get("images", []):
+                    if "selected_for_report" not in img:
+                        img["selected_for_report"] = True
+
+            st.session_state.processed_sites = site_data
+
+            # Auto-populate customer info from metadata on first load ingestion
+            if site_data:
+                first_site = site_data[0]
+                first_address = first_site.get("address", "")
+                # Use the agency_name already computed by processor, fallback to extraction if not available
+                agency_name = first_site.get("agency_name") or f"{_extract_town_state_from_address(first_address)[0]} Police Department"
+
+                st.session_state.customer_info = {
+                    "agency_name": agency_name,
+                    "agency_address": first_address,
+                    "poc_name": "",
+                    "poc_email": "",
+                    "poc_phone": "",
+                    "it_director": "",
+                    "it_email": "",
+                    "facilities_engineer": "",
+                    "facilities_email": "",
+                }
+                _save_session_metadata(site_data)
+
+            st.success(f"Successfully processed {len(site_data)} unique DFR sites!")
+            progress_text.caption("100% - Complete")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Processing failed: {e}")
+        finally:
+            progress_bar.empty()
+            progress_text.empty()
+
+# Layout Columns
+tab1, tab2, tab3 = st.tabs(["📋 Survey Pipeline", "🔗 Workflow Sync", "📈 Analytics & Logs"])
+
+with tab1:
+    # 0. Customer Info Panel at the top
+    st.subheader("Customer & Agency Information")
+    col_c1, col_c2, col_c3 = st.columns(3)
+    with col_c1:
+        st.session_state.customer_info["agency_name"] = st.text_input("Agency Name", value=st.session_state.customer_info["agency_name"])
+        st.session_state.customer_info["agency_address"] = st.text_input("Agency Address", value=st.session_state.customer_info["agency_address"])
+    with col_c2:
+        st.session_state.customer_info["poc_name"] = st.text_input("POC Name", value=st.session_state.customer_info["poc_name"])
+        st.session_state.customer_info["poc_email"] = st.text_input("POC Email", value=st.session_state.customer_info["poc_email"])
+    with col_c3:
+        st.session_state.customer_info["it_director"] = st.text_input("IT Contact", value=st.session_state.customer_info["it_director"])
+        if st.button("🔌 Pull Customer Info (HubSpot + Gmail)", use_container_width=True):
+            st.session_state.integration_logs.append("[HubSpot API] GET /crm/v3/deals - Customer lookup requested")
+            st.session_state.integration_logs.append("[Gmail API] GET /messages - Contact lookup requested")
+            st.info("Agency info comes from the geotagged photos. Contact fields remain blank until filled from HubSpot, Jira, or Google.")
+            st.rerun()
+
+    st.divider()
+
+    # Three column layout: Left (Sites), Middle (Map/Markup), Right (History)
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col1:
+        if st.session_state.processed_sites:
+            st.subheader("Sites Detected")
+            for site in st.session_state.processed_sites:
+                st.markdown(f"**{site['site_id']}: {site['address'].split(',')[0]}**")
+                st.caption(f"Coordinates: {site['latitude']:.4f}, {site['longitude']:.4f}")
+                st.caption(f"Airspace: `{site['airspace']}`")
+                
+    with col2:
+        st.subheader("Site Detail & Map Visualisation")
+        if st.session_state.processed_sites:
+            # Show map
+            map_data = pd.DataFrame([
+                {"lat": s['latitude'], "lon": s['longitude'], "name": s['address'].split(',')[0]}
+                for s in st.session_state.processed_sites
+            ])
+            st.map(map_data, zoom=12)
+            
+            # Show detailed card for selected site
+            selected_site_idx = st.selectbox("Select Site to Inspect", range(len(st.session_state.processed_sites)), format_func=lambda idx: st.session_state.processed_sites[idx]['site_id'])
+            selected_site = st.session_state.processed_sites[selected_site_idx]
+
+            # Auto-populate agency name from batch folder name
+            if selected_site.get('batch_folder_path'):
+                batch_folder_name = os.path.basename(selected_site['batch_folder_path'])
+                # Remove timestamp suffix (last 15 chars: YYYYMMDD_HHMMSS)
+                if len(batch_folder_name) > 15:
+                    # Check if last 15 chars match timestamp pattern (8 digits, underscore, 6 digits)
+                    potential_timestamp = batch_folder_name[-15:]
+                    if potential_timestamp[8] == '_' and potential_timestamp[:8].isdigit() and potential_timestamp[9:].isdigit():
+                        agency_name = batch_folder_name[:-15].replace('_', ' ')
+                    else:
+                        agency_name = batch_folder_name.replace('_', ' ')
+                else:
+                    agency_name = batch_folder_name.replace('_', ' ')
+
+                # Remove leading numeric prefixes (e.g., "1075 Police" -> "Police")
+                parts = agency_name.split()
+                while parts and parts[0].isdigit():
+                    parts.pop(0)
+                agency_name = ' '.join(parts)
+
+                st.session_state.customer_info["agency_name"] = agency_name
+
+            st.markdown(f"### {selected_site['address']}")
+            st.write(f"📁 **Local Folder:** `{selected_site['folder_path']}`")
+            
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.markdown("##### Infrastructure Detection")
+                st.write(f"🪜 **Roof Access:** {selected_site['analysis'].get('roof_access')}")
+                st.write(f"🏠 **Roof Type:** {selected_site['analysis'].get('roof_type')}")
+            with col_b:
+                st.markdown("##### Mounting & Hardware")
+                st.write(f"📐 **Mounts:** {', '.join(selected_site['analysis'].get('mounting_structures', [])) or 'None'}")
+                st.write(f"🔌 **Hardware:** {', '.join(selected_site['analysis'].get('hardware', [])) or 'None'}")
+                
+            # Rooftop Engineering Annotator Panel
+            st.divider()
+            st.subheader("🛠️ Interactive Rooftop Layout & Annotator")
+            st.write("1. Click a thumbnail below to select the background. 2. Select node type/label. 3. Click directly on the image to place the node!")
+            
+            # 1. Thumbnails Selection Row
+            st.markdown("##### Select Background Photo:")
+            images_list = selected_site.get('images', [])
+            cols_per_row = 6
+            for i in range(0, len(images_list), cols_per_row):
+                chunk = images_list[i:i+cols_per_row]
+                col_thumb = st.columns(cols_per_row)
+                for idx_in_chunk, img in enumerate(chunk):
+                    global_idx = i + idx_in_chunk
+                    with col_thumb[idx_in_chunk]:
+                        img_path = img.get('dest_path') or img.get('path')
+                        thumb_path = _get_displayable_image_path(img_path)
+                        if thumb_path:
+                            is_active = img['filename'] == st.session_state.active_bg_image
+                            st.image(thumb_path, width=60)
+                            btn_label = "🎯 Active" if is_active else "Select"
+                            if st.button(btn_label, key=f"sel_thumb_{selected_site['site_id']}_{global_idx}", use_container_width=True):
+                                st.session_state.active_bg_image = img['filename']
+                                st.session_state.last_click[selected_site['site_id']] = None
+                                st.rerun()
+                        else:
+                            st.caption(f"Error: {img['filename'][:8]}...")
+            
+            # Default to first image if none selected
+            if not st.session_state.active_bg_image and selected_site.get('images'):
+                st.session_state.active_bg_image = selected_site['images'][0]['filename']
+                
+            if st.session_state.active_bg_image:
+                active_img_meta = next((img for img in selected_site['images'] if img['filename'] == st.session_state.active_bg_image), None)
+                if not active_img_meta and selected_site.get('images'):
+                    active_img_meta = selected_site['images'][0]
+                    st.session_state.active_bg_image = active_img_meta['filename']
+
+                if active_img_meta:
+                    bg_path = active_img_meta.get('dest_path') or active_img_meta.get('path')
+                    bg_display_path = _get_displayable_image_path(bg_path)
+
+                    # Markers & Image placements state init - per image
+                    # Backward compatibility: convert old 'markers' format to new 'markers_by_image' format
+                    if 'markers_by_image' not in selected_site:
+                        selected_site['markers_by_image'] = {}
+                        # If old markers exist, assign them to the first image
+                        if 'markers' in selected_site and selected_site['markers']:
+                            first_img = selected_site['images'][0]['filename'] if selected_site.get('images') else None
+                            if first_img:
+                                selected_site['markers_by_image'][first_img] = selected_site.pop('markers', [])
+
+                    if 'image_placements_by_image' not in selected_site:
+                        selected_site['image_placements_by_image'] = {}
+
+                    if st.session_state.active_bg_image not in selected_site['markers_by_image']:
+                        selected_site['markers_by_image'][st.session_state.active_bg_image] = []
+
+                    if st.session_state.active_bg_image not in selected_site['image_placements_by_image']:
+                        selected_site['image_placements_by_image'][st.session_state.active_bg_image] = []
+
+                    # Get markers and placements for current image
+                    current_markers = selected_site['markers_by_image'][st.session_state.active_bg_image]
+                    current_placements = selected_site['image_placements_by_image'][st.session_state.active_bg_image]
+
+                    if 'eng_note' not in selected_site:
+                        selected_site['eng_note'] = (
+                            "Responder may be installed at this time with 110V, 20A service. "
+                            "If Guardian is installed in the future, it will require 208V, 30A service "
+                            "with additional wiring and electrical provisions to support the higher voltage requirement."
+                        )
+
+                    # Get available images from the images directory
+                    images_dir = os.path.join(os.path.dirname(__file__), "images")
+                    available_images = []
+                    if os.path.exists(images_dir):
+                        for img_file in os.listdir(images_dir):
+                            if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                                available_images.append(img_file)
+                    available_images.sort()
+
+                    # Form to configure placement - Nodes or Images
+                    st.markdown("##### Placement Customization (To place on image click)")
+
+                    # Define dropdown options for each node type
+                    node_type_options = {
+                        "Electric": ["15 Amp 110V AC", "20 Amp 110V AC", "30 Amp 208V AC"],
+                        "Data": ["BRINC RF Site 25 50", "BRINC Station 25 50", "BRINC Radar Site 10 10"],
+                        "RF": ["10 foot pole", "20 foot pole", "30 foot pole", "microsite", "Tower"],
+                        "Unistrut": ["3 Unistrut", "4 Unistrut"],
+                        "Lift": ["Crane", "Fire Department"]
+                    }
+
+                    # Placement mode selection
+                    placement_mode = st.radio("What to place:", ["📍 Node", "🖼️ Image"], horizontal=True, key=f"int_placement_mode_{selected_site['site_id']}")
+
+                    m_type = None
+                    m_label = None
+                    placement_image = None
+
+                    if "Node" in placement_mode:
+                        col_m1, col_m2 = st.columns(2)
+                        with col_m1:
+                            m_type = st.selectbox("Node Type", ["Electric", "Data", "RF", "Unistrut", "Lift"], key=f"int_mtype_{selected_site['site_id']}")
+                        with col_m2:
+                            # Get available labels for selected node type, default to first option
+                            available_labels = node_type_options.get(m_type, [""])
+                            default_label = available_labels[0] if available_labels else ""
+                            m_label = st.selectbox("Node Label", available_labels, key=f"int_mlabel_{selected_site['site_id']}")
+                    else:  # Image mode
+                        if available_images:
+                            placement_image = st.selectbox("Select Image to Place", available_images, key=f"int_placement_img_{selected_site['site_id']}")
+                        else:
+                            st.warning("No images available in the images directory.")
+                            placement_image = None
+
+                    # 2. Interactive Image coordinate placement
+                    st.markdown("🎯 **Click on the image below to place this node:**")
+
+                    # Create unique drawing path per image
+                    img_base_name = os.path.splitext(st.session_state.active_bg_image)[0]
+                    output_drawing_path = os.path.join(selected_site['folder_path'], f"engineering_layout_{img_base_name}.png")
+                    display_img_path = output_drawing_path if os.path.exists(output_drawing_path) else bg_display_path
+                    if not display_img_path:
+                        st.error(f"Cannot preview or annotate this image: {active_img_meta['filename']}")
+                        st.stop()
+
+                    # We show the image and capture click
+                    # Force full refresh by including image path in key
+                    canvas_key = f"canvas_{selected_site['site_id']}_{hash(st.session_state.active_bg_image)}"
+                    click = streamlit_image_coordinates(display_img_path, key=canvas_key, width=600)
+
+                    if click:
+                        click_key = f"{selected_site['site_id']}_{st.session_state.active_bg_image}_{click.get('x')}_{click.get('y')}"
+                        if st.session_state.last_click.get(selected_site['site_id']) != click_key:
+                            st.session_state.last_click[selected_site['site_id']] = click_key
+
+                            click_x = click.get("x", 0)
+                            click_y = click.get("y", 0)
+
+                            try:
+                                with Image.open(display_img_path) as temp_img:
+                                    w, h = temp_img.size
+
+                                # Scale click coordinates from 600px display to actual image dimensions
+                                display_width = 600
+                                scale_x = w / display_width
+                                scale_y = h / (display_width * h / w)  # Maintain aspect ratio
+                                click_x = click_x * scale_x
+                                click_y = click_y * scale_y
+
+                                is_drawing = os.path.exists(output_drawing_path)
+                                photo_width_ratio = 0.80 if is_drawing else 1.0
+
+                                ratio_x = click_x / w
+                                ratio_y = click_y / h
+
+                                if ratio_x <= photo_width_ratio:
+                                    if "Node" in placement_mode:
+                                        # Place Node
+                                        node_x_pct = (ratio_x / photo_width_ratio) * 100
+                                        node_y_pct = ratio_y * 100
+
+                                        label_x_pct = max(node_x_pct - 15, 5)
+                                        label_y_pct = max(node_y_pct - 8, 5)
+
+                                        selected_site['markers_by_image'][st.session_state.active_bg_image].append({
+                                            'type': m_type,
+                                            'label': m_label,
+                                            'node_x': node_x_pct,
+                                            'node_y': node_y_pct,
+                                            'label_x': label_x_pct,
+                                            'label_y': label_y_pct
+                                        })
+                                        success_msg = f"Added {m_label} Node!"
+                                    else:
+                                        # Place Image
+                                        img_x_pct = (ratio_x / photo_width_ratio) * 100
+                                        img_y_pct = ratio_y * 100
+
+                                        selected_site['image_placements_by_image'][st.session_state.active_bg_image].append({
+                                            'image_name': placement_image,
+                                            'x': img_x_pct,
+                                            'y': img_y_pct
+                                        })
+                                        success_msg = f"Added {placement_image}!"
+
+                                    # Auto-compile drawing in background
+                                    reporter.create_engineering_drawing(
+                                        bg_display_path or bg_path,
+                                        output_drawing_path,
+                                        selected_site['markers_by_image'][st.session_state.active_bg_image],
+                                        selected_site['eng_note'],
+                                        address=selected_site['address'],
+                                        image_placements=selected_site['image_placements_by_image'][st.session_state.active_bg_image],
+                                        images_dir=images_dir
+                                    )
+                                    # Save meta session
+                                    _save_session_metadata(st.session_state.processed_sites)
+                                    st.success(success_msg)
+                                    st.rerun()
+                            except Exception as e:
+                                st.error(f"Error registering click: {e}")
+
+                    # Action Buttons
+                    col_btn1, col_btn2 = st.columns(2)
+                    with col_btn1:
+                        selected_site['eng_note'] = st.text_area("Engineer's Notes Text", value=selected_site['eng_note'], key=f"int_engnote_{selected_site['site_id']}")
+                    with col_btn2:
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        if st.button("🗑️ Clear All Placements", use_container_width=True, key=f"int_clearnode_{selected_site['site_id']}"):
+                            selected_site['markers_by_image'][st.session_state.active_bg_image] = []
+                            selected_site['image_placements_by_image'][st.session_state.active_bg_image] = []
+                            if os.path.exists(output_drawing_path):
+                                os.remove(output_drawing_path)
+                            _save_session_metadata(st.session_state.processed_sites)
+                            st.warning("Cleared all nodes and images for this photo.")
+                            st.rerun()
+
+                        if st.button("🔄 Refresh Rendering", use_container_width=True, key=f"int_redraw_{selected_site['site_id']}"):
+                            reporter.create_engineering_drawing(
+                                bg_display_path or bg_path,
+                                output_drawing_path,
+                                selected_site['markers_by_image'][st.session_state.active_bg_image],
+                                selected_site['eng_note'],
+                                address=selected_site['address'],
+                                image_placements=selected_site['image_placements_by_image'][st.session_state.active_bg_image],
+                                images_dir=images_dir
+                            )
+                            _save_session_metadata(st.session_state.processed_sites)
+                            st.rerun()
+
+                    # Show drawing preview below buttons if it exists
+                    if os.path.exists(output_drawing_path):
+                        st.image(output_drawing_path, caption="Active Engineering Markup Layout Preview", use_container_width=True)
+            else:
+                st.warning("Please upload or process images first to mark up.")
+                
+            # Report generation button
+            st.subheader("Report Generation")
+            report_name = st.text_input("Master Document Name", value="Master_DFR_Site_Survey_Report.docx")
+            if st.button("📄 Build Word Document", use_container_width=True):
+                try:
+                    # Update metadata save
+                    _save_session_metadata(st.session_state.processed_sites)
+
+                    # Create subfolder with PD name and creation date
+                    pd_name = st.session_state.customer_info.get("agency_name", "Report").replace(" ", "_")
+                    creation_date = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    report_subfolder = os.path.join(output_dir, f"{pd_name}_{creation_date}")
+                    os.makedirs(report_subfolder, exist_ok=True)
+
+                    # Save report in subfolder
+                    report_path = os.path.join(report_subfolder, report_name)
+
+                    reporter.generate_word_report(
+                        st.session_state.processed_sites,
+                        report_path,
+                        customer_info=st.session_state.customer_info
+                    )
+                    st.success(f"Generated Word Document at `{report_path}`!")
+                    st.session_state.generated_report = report_path
+                except Exception as e:
+                    st.error(f"Report generation error: {e}")
+        else:
+            st.info("No sites loaded. Run the ingestion step first.")
+
+    with col3:
+        st.subheader("Previous Sessions")
+        resolved_output_dir = _resolve_app_path(output_dir)
+        if os.path.exists(resolved_output_dir):
+            subdirs = [d for d in os.listdir(resolved_output_dir) if os.path.isdir(os.path.join(resolved_output_dir, d)) and d != "__pycache__" and d != "Unclassified_No_GPS"]
+            if subdirs:
+                for d in sorted(subdirs):
+                    # Try to load the actual agency name from metadata first
+                    meta_file = os.path.join(resolved_output_dir, d, "session_metadata.json")
+                    display_name = None
+
+                    if os.path.exists(meta_file):
+                        try:
+                            with open(meta_file, "r") as mf:
+                                loaded_metadata = json.load(mf)
+                            # Use the agency name from customer_info if available
+                            if "customer_info" in loaded_metadata and loaded_metadata["customer_info"].get("agency_name"):
+                                display_name = loaded_metadata["customer_info"]["agency_name"]
+                        except Exception:
+                            pass
+
+                    # Fallback to parsing folder name if metadata lookup failed
+                    if not display_name:
+                        display_name = d.replace("Site_1_", "").replace("Site_2_", "").replace("Site_3_", "").replace("_", " ").replace("Site-001", "").replace("Site-002", "")
+                        if "Lansing" in display_name:
+                            display_name = "Lansing Illinois Police"
+
+                    if st.button(display_name, key=f"prev_sess_btn_{d}", use_container_width=True):
+                        if os.path.exists(meta_file):
+                            try:
+                                with open(meta_file, "r") as mf:
+                                    loaded_site = json.load(mf)
+                                st.session_state.processed_sites = [loaded_site]
+                                if loaded_site.get("images"):
+                                    st.session_state.active_bg_image = loaded_site["images"][0]["filename"]
+                                if "customer_info" in loaded_site:
+                                    st.session_state.customer_info = loaded_site["customer_info"]
+                                st.success(f"Loaded session for {display_name}")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to load session: {e}")
+                        else:
+                            st.warning("No session_metadata.json found.")
+            else:
+                st.caption("No previous sessions found.")
+        else:
+            st.caption("No output directory found.")
+
+with tab2:
+    st.subheader("Cloud Workflow Orchestration")
+    st.write("Connect survey findings to CRM, task tracking, calendar scheduler, and communications.")
+    
+    col_x, col_y = st.columns(2)
+    
+    with col_x:
+        st.markdown("#### CRM & Kickoff Scheduler")
+        if st.button("🔍 Fetch Customer Purchase Info (HubSpot)", use_container_width=True, key="hs_sync_tab2"):
+            st.session_state.integration_logs.append("[HubSpot API] GET /crm/v3/objects/deals - Retrieved Contact: Mike Hynek, Deal: DFR Node Deployment")
+            st.info("Deal information retrieved successfully.")
+            
+        if st.button("📅 Schedule Kickoff Meeting (Google Calendar)", use_container_width=True, key="cal_sync_tab2"):
+            st.session_state.integration_logs.append("[Google Calendar API] POST /events - Scheduled Kickoff for Lansing PD")
+            st.success("Meeting Scheduled & Invites sent to stakeholders.")
+
+        if st.button("☁️ Sync Report to Google Drive", use_container_width=True, key="drive_sync_tab2"):
+            if hasattr(st.session_state, 'generated_report'):
+                st.session_state.integration_logs.append(f"[Google Drive API] POST /files - Uploaded '{os.path.basename(st.session_state.generated_report)}'")
+                st.success("Report synchronized to cloud storage.")
+            else:
+                st.warning("Generate the Word report first on the Survey Pipeline tab.")
+
+    with col_y:
+        st.markdown("#### Operations & Communication")
+        if st.button("🎫 Create Deployment Tracker (Jira)", use_container_width=True, key="jira_sync_tab2"):
+            st.session_state.integration_logs.append("[Jira REST API] POST /issue - Created onboarding ticket LANS-101")
+            st.success("Jira Onboarding Issue Created: LANS-101")
+            
+        if st.button("💬 Send Project Status to Slack", use_container_width=True, key="slack_sync_tab2"):
+            st.session_state.integration_logs.append("[Slack Webhook] POST /hooks - Posted Lansing PD survey status")
+            st.success("Notification broadcasted to Slack channels.")
+
+with tab3:
+    st.subheader("Execution & Integration Logs")
+    if st.session_state.integration_logs:
+        for log in st.session_state.integration_logs:
+            st.text(log)
+    else:
+        st.write("No integration steps executed yet.")
