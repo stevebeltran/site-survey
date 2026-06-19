@@ -30,7 +30,11 @@ output/
 
 # Test data
 mock_raw_images/
-images/
+
+# Ignore uploaded images but keep app assets
+images/*
+!images/BRINC_Logo_White.png
+!images/station_overlay.png
 
 # Backups
 *.bundle
