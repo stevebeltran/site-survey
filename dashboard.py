@@ -296,12 +296,21 @@ with st.container(border=True):
             st.session_state.active_bg_image = None
             st.session_state.last_click = {}
 
+            # Get Drive manager for processing pipeline
+            drive = None
+            try:
+                drive = get_drive_manager()
+            except Exception as e:
+                st.warning(f"Google Drive not available for this session: {e}")
+
             site_data = processor.process_and_organize_images(
-                source_dir,
-                output_dir,
+                source_dir=source_dir,
+                output_dir=output_dir,
                 radius_meters=proximity_radius,
                 progress_callback=_update_processing_progress,
                 image_paths=uploaded_file_paths,
+                drive_manager=drive,
+                drive_output_folder_id=st.session_state.get('processed_folder_id')
             )
 
             if not site_data:
@@ -701,10 +710,19 @@ with tab1:
                     # Save report in subfolder
                     report_path = os.path.join(report_subfolder, report_name)
 
+                    # Get Drive manager for report upload
+                    drive = None
+                    try:
+                        drive = get_drive_manager()
+                    except Exception:
+                        pass
+
                     reporter.generate_word_report(
                         st.session_state.processed_sites,
                         report_path,
-                        customer_info=st.session_state.customer_info
+                        customer_info=st.session_state.customer_info,
+                        drive_manager=drive,
+                        drive_reports_folder_id=st.session_state.get('reports_folder_id')
                     )
                     st.success(f"Generated Word Document at `{report_path}`!")
                     st.session_state.generated_report = report_path
