@@ -323,10 +323,22 @@ def _derive_department_folder_name(full_address=None):
     return f"{_sanitize_folder_name(base)}_{timestamp}"
 
 
-def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, progress_callback=None, image_paths=None):
+def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, progress_callback=None, image_paths=None, drive_manager=None, drive_output_folder_id=None):
     """
     Scan source_dir for images, cluster by GPS, reverse-geocode,
     create subdirectories in output_dir, copy files, and return structure.
+
+    Can optionally upload processed files to Google Drive if drive_manager and
+    drive_output_folder_id are provided.
+
+    Args:
+        source_dir: Directory containing source images
+        output_dir: Directory for local output
+        radius_meters: GPS clustering radius (default 90m)
+        progress_callback: Optional callback for progress updates
+        image_paths: Optional list of specific image paths to process
+        drive_manager: Optional GoogleDriveManager instance for Drive upload
+        drive_output_folder_id: Optional Google Drive folder ID for upload
 
     Returns:
         list: site_data with structure:
@@ -455,6 +467,29 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
         for img in no_gps_images:
             dest_path = os.path.join(unclassified_folder, img['filename'])
             shutil.copy2(img['path'], dest_path)
-    
+
+    # If using Google Drive, upload processed files
+    if drive_manager and drive_output_folder_id:
+        try:
+            for site in site_data:
+                # Upload site folder structure to Drive
+                site_folder_name = site.get('folder_name', f"Site_{site['site_id']}")
+                drive_site_folder_id = drive_manager.get_or_create_folder(
+                    drive_output_folder_id,
+                    site_folder_name
+                )
+
+                # Upload images from this site
+                for img in site.get('images', []):
+                    if 'dest_path' in img and os.path.exists(img['dest_path']):
+                        drive_manager.upload_file(
+                            img['dest_path'],
+                            drive_site_folder_id
+                        )
+        except ValueError as e:
+            print(f"Drive upload error: {e}")
+        except Exception as e:
+            print(f"Unexpected error during Drive upload: {e}")
+
     _report_progress(100, "EXIF scan and clustering complete.")
     return site_data
