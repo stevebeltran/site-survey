@@ -176,9 +176,18 @@ def create_engineering_drawing(bg_path, output_path, markers, engineer_note, add
         addr_width = addr_bbox[2] - addr_bbox[0]
         addr_height = addr_bbox[3] - addr_bbox[1]
 
-        # Position at top center of photo area
-        addr_x = (bg_w - addr_width) // 2
+        # Position at top center of photo area, clamped to stay in bounds
+        addr_x = max(12, (bg_w - addr_width) // 2)
         addr_y = 10
+
+        # If text is wider than photo area, truncate with ellipsis
+        if addr_width > bg_w - 30:
+            while addr_width > bg_w - 30 and len(addr_text) > 10:
+                addr_text = addr_text[:-4] + "..."
+                addr_bbox = draw.textbbox((0, 0), addr_text, font=font_title)
+                addr_width = addr_bbox[2] - addr_bbox[0]
+                addr_height = addr_bbox[3] - addr_bbox[1]
+            addr_x = max(12, (bg_w - addr_width) // 2)
 
         # Draw background box for readability
         padding = 12
