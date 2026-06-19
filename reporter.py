@@ -219,26 +219,29 @@ def create_engineering_drawing(bg_path, output_path, markers, engineer_note, add
         ("Station", "#F8FAFC")     # White
     ]
     
-    font_large = None
     try:
-        font_large = ImageFont.truetype("arial.ttf", 22)
+        font_bubble = ImageFont.truetype("arialbd.ttf", 28)
+        font_legend = ImageFont.truetype("arialbd.ttf", 26)
+        font_title = ImageFont.truetype("arialbd.ttf", 22)
         font_small = ImageFont.truetype("arial.ttf", 14)
         font_note = ImageFont.truetype("arial.ttf", 16)
     except:
-        font_large = None
+        font_bubble = None
+        font_legend = None
+        font_title = None
         font_small = None
         font_note = None
 
     # Draw legend labels and color markers
     y_offset = 40
     for title, color in legend_items:
-        draw.text((bg_w + 50, y_offset), title, fill=color, font=font_large)
+        draw.text((bg_w + 50, y_offset), title, fill=color, font=font_legend)
         # Draw a little colored symbol next to it
         draw.rectangle([bg_w + 20, y_offset + 5, bg_w + 35, y_offset + 20], fill=color)
         y_offset += 65
         
     # Draw "brinc" stylized logo at the bottom right
-    draw.text((bg_w + 20, canvas_h - 60), "brinc", fill='#F8FAFC', font=font_large)
+    draw.text((bg_w + 20, canvas_h - 60), "brinc", fill='#F8FAFC', font=font_legend)
 
     # Draw Markers & Callouts on the background image
     for m in markers:
@@ -283,7 +286,7 @@ def create_engineering_drawing(bg_path, output_path, markers, engineer_note, add
         draw.rounded_rectangle([rx1, ry1, rx2, ry2], radius=12, outline=border_color, width=3, fill='#000000')
         
         # Draw Text
-        draw.text((rx1 + pad_x, ry1 + pad_y - 2), label_text, fill='#FFFFFF', font=font_large)
+        draw.text((rx1 + pad_x, ry1 + pad_y - 2), label_text, fill='#FFFFFF', font=font_bubble)
 
     # Draw Engineer's Note Box in the Bottom Right
     note_w, note_h = 240, 250
