@@ -174,5 +174,74 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue(out_path.exists())
 
 
+class TestBubblePlacement(unittest.TestCase):
+    """Tests for smart bubble placement in engineering drawings."""
+
+    def test_bubble_near_top_left_avoids_clipping(self):
+        """A marker near the top-left corner should place its bubble below/right, not off-screen."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            bg_path = tmp_path / "bg.png"
+            out_path = tmp_path / "drawing.png"
+            Image.new("RGB", (400, 200), color="gray").save(bg_path)
+
+            markers = [
+                {"type": "Electric", "label": "20A 110V AC", "node_x": 2, "node_y": 2, "label_x": 2, "label_y": 2},
+            ]
+            result = reporter.create_engineering_drawing(str(bg_path), str(out_path), markers, "Test")
+            self.assertTrue(out_path.exists())
+            with Image.open(out_path) as img:
+                self.assertEqual(img.size, (1200, 675))
+
+    def test_bubble_near_right_edge_avoids_clipping(self):
+        """A marker near the right edge should not place its bubble off the photo area."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            bg_path = tmp_path / "bg.png"
+            out_path = tmp_path / "drawing.png"
+            Image.new("RGB", (400, 200), color="gray").save(bg_path)
+
+            markers = [
+                {"type": "Data", "label": "CAT6 Drop", "node_x": 95, "node_y": 50, "label_x": 95, "label_y": 50},
+            ]
+            result = reporter.create_engineering_drawing(str(bg_path), str(out_path), markers, "Test")
+            self.assertTrue(out_path.exists())
+
+    def test_multiple_markers_same_area_no_crash(self):
+        """Multiple markers clustered together should render without errors."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            bg_path = tmp_path / "bg.png"
+            out_path = tmp_path / "drawing.png"
+            Image.new("RGB", (400, 200), color="gray").save(bg_path)
+
+            markers = [
+                {"type": "Electric", "label": "20A 110V", "node_x": 50, "node_y": 50, "label_x": 35, "label_y": 42},
+                {"type": "Data", "label": "CAT6", "node_x": 52, "node_y": 52, "label_x": 37, "label_y": 44},
+                {"type": "RF", "label": "5GHz", "node_x": 48, "node_y": 48, "label_x": 33, "label_y": 40},
+            ]
+            result = reporter.create_engineering_drawing(str(bg_path), str(out_path), markers, "Test")
+            self.assertTrue(out_path.exists())
+            with Image.open(out_path) as img:
+                self.assertEqual(img.size, (1200, 675))
+
+    def test_four_corner_markers(self):
+        """Markers at all four corners should all render without clipping."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            bg_path = tmp_path / "bg.png"
+            out_path = tmp_path / "drawing.png"
+            Image.new("RGB", (400, 200), color="gray").save(bg_path)
+
+            markers = [
+                {"type": "Electric", "label": "TL corner", "node_x": 3, "node_y": 3, "label_x": 3, "label_y": 3},
+                {"type": "Data", "label": "TR corner", "node_x": 97, "node_y": 3, "label_x": 97, "label_y": 3},
+                {"type": "RF", "label": "BL corner", "node_x": 3, "node_y": 97, "label_x": 3, "label_y": 97},
+                {"type": "Unistrut", "label": "BR corner", "node_x": 97, "node_y": 97, "label_x": 97, "label_y": 97},
+            ]
+            result = reporter.create_engineering_drawing(str(bg_path), str(out_path), markers, "Test")
+            self.assertTrue(out_path.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

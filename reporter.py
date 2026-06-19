@@ -250,49 +250,104 @@ def create_engineering_drawing(bg_path, output_path, markers, engineer_note, add
     draw.text((bg_w + 20, canvas_h - 60), "brinc", fill='#F8FAFC', font=font_legend)
 
     # Draw Markers & Callouts on the background image
+    # Track placed bubble rectangles for collision avoidance
+    placed_bubbles = []
+
     for m in markers:
         # Convert percent to actual pixel coords
         nx = int((m['node_x'] / 100.0) * bg_w)
         ny = int((m['node_y'] / 100.0) * canvas_h)
-        lx = int((m['label_x'] / 100.0) * bg_w)
-        ly = int((m['label_y'] / 100.0) * canvas_h)
-        
+
         m_type = m.get('type', 'Electric')
         label_text = m.get('label', '')
-        
+
         # Select color matching type
-        border_color = '#EF4444' # Default Red (Electric)
-        if m_type == 'Data':
-            border_color = '#F97316' # Orange
-        elif m_type == 'RF':
-            border_color = '#A855F7' # Purple
-        elif m_type == 'Unistrut':
-            border_color = '#94A3B8'
-        elif m_type == 'Lift':
-            border_color = '#EAB308'
-            
-        # Draw connection line from Node to Callout Label
-        # Draw a path with intermediate node circles if specified
+        color_map = {
+            'Data': '#F97316',
+            'RF': '#A855F7',
+            'Unistrut': '#94A3B8',
+            'Lift': '#EAB308',
+        }
+        border_color = color_map.get(m_type, '#EF4444')
+
+        # Measure actual text size for accurate bubble dimensions
+        if font_bubble:
+            bbox = draw.textbbox((0, 0), label_text, font=font_bubble)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+        else:
+            text_w = len(label_text) * 14
+            text_h = 30
+
+        pad_x, pad_y = 14, 14
+        bubble_w = text_w + pad_x * 2
+        bubble_h = text_h + pad_y * 2
+
+        # Smart bubble placement: try 4 directions, check edge + collision
+        offset_x = int(bg_w * 0.15)
+        offset_y = int(canvas_h * 0.08)
+
+        candidates = [
+            (nx - offset_x - bubble_w // 2, ny - offset_y - bubble_h // 2),  # upper-left
+            (nx + offset_x - bubble_w // 2, ny - offset_y - bubble_h // 2),  # upper-right
+            (nx + offset_x - bubble_w // 2, ny + offset_y - bubble_h // 2),  # lower-right
+            (nx - offset_x - bubble_w // 2, ny + offset_y - bubble_h // 2),  # lower-left
+        ]
+
+        best_pos = None
+        best_overlap = float('inf')
+
+        for cx, cy in candidates:
+            # Clamp to photo area bounds
+            cx = max(2, min(cx, bg_w - bubble_w - 2))
+            cy = max(2, min(cy, canvas_h - bubble_h - 2))
+            candidate_rect = (cx, cy, cx + bubble_w, cy + bubble_h)
+
+            # Check if bubble fits within photo area
+            fits_edge = (cx >= 0 and cy >= 0 and cx + bubble_w <= bg_w and cy + bubble_h <= canvas_h)
+
+            # Calculate total overlap with already-placed bubbles
+            total_overlap = 0
+            for pb in placed_bubbles:
+                # AABB intersection area
+                ox1 = max(candidate_rect[0], pb[0])
+                oy1 = max(candidate_rect[1], pb[1])
+                ox2 = min(candidate_rect[2], pb[2])
+                oy2 = min(candidate_rect[3], pb[3])
+                if ox1 < ox2 and oy1 < oy2:
+                    total_overlap += (ox2 - ox1) * (oy2 - oy1)
+
+            if fits_edge and total_overlap == 0:
+                best_pos = (cx, cy)
+                break
+            elif total_overlap < best_overlap:
+                best_overlap = total_overlap
+                best_pos = (cx, cy)
+
+        if best_pos is None:
+            best_pos = (candidates[0][0], candidates[0][1])
+
+        lx, ly = best_pos[0] + bubble_w // 2, best_pos[1] + bubble_h // 2
+        rx1, ry1 = best_pos
+        rx2, ry2 = rx1 + bubble_w, ry1 + bubble_h
+
+        # Track this bubble for future collision checks
+        placed_bubbles.append((rx1, ry1, rx2, ry2))
+
+        # Draw connection line from node dot to bubble center
         draw.line([(nx, ny), (lx, ly)], fill=border_color, width=3)
-        
-        # Draw small circles at the connection endpoints
-        draw.ellipse([nx-6, ny-6, nx+6, ny+6], fill=border_color)
-        draw.ellipse([lx-4, ly-4, lx+4, ly+4], fill=border_color)
-        
-        # Calculate text bounding box to wrap in rounded rectangle
-        # Roughly calculate text size
-        text_w = len(label_text) * 11
-        text_h = 24
-        
-        pad_x, pad_y = 12, 12
-        rx1, ry1 = lx - text_w // 2 - pad_x, ly - text_h // 2 - pad_y
-        rx2, ry2 = lx + text_w // 2 + pad_x, ly + text_h // 2 + pad_y
-        
-        # Draw Rounded Rect for text
+
+        # Draw node dot and bubble endpoint dot
+        draw.ellipse([nx - 6, ny - 6, nx + 6, ny + 6], fill=border_color)
+        draw.ellipse([lx - 4, ly - 4, lx + 4, ly + 4], fill=border_color)
+
+        # Draw rounded rectangle bubble
         draw.rounded_rectangle([rx1, ry1, rx2, ry2], radius=12, outline=border_color, width=3, fill='#000000')
-        
-        # Draw Text
-        draw.text((rx1 + pad_x, ry1 + pad_y - 2), label_text, fill='#FFFFFF', font=font_bubble)
+
+        # Draw centered text inside bubble
+        text_x = rx1 + (bubble_w - text_w) // 2
+        text_y = ry1 + (bubble_h - text_h) // 2
+        draw.text((text_x, text_y), label_text, fill='#FFFFFF', font=font_bubble)
 
     # Draw Engineer's Note Box in the Bottom Right
     note_w, note_h = 240, 250
