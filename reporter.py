@@ -141,6 +141,20 @@ def create_engineering_drawing(bg_path, output_path, markers, engineer_note, add
     canvas = Image.new('RGB', (canvas_w, canvas_h), color='#000000')
     draw = ImageDraw.Draw(canvas)
     
+    # Initialize fonts (must be done before any text rendering below)
+    try:
+        font_bubble = ImageFont.truetype("arialbd.ttf", 28)
+        font_legend = ImageFont.truetype("arialbd.ttf", 26)
+        font_title = ImageFont.truetype("arialbd.ttf", 22)
+        font_small = ImageFont.truetype("arial.ttf", 14)
+        font_note = ImageFont.truetype("arial.ttf", 16)
+    except:
+        font_bubble = None
+        font_legend = None
+        font_title = None
+        font_small = None
+        font_note = None
+
     # Draw background image
     if os.path.exists(bg_path):
         try:
@@ -156,14 +170,9 @@ def create_engineering_drawing(bg_path, output_path, markers, engineer_note, add
 
     # Add Address at the top center of the photo area
     if address:
-        try:
-            font_address = ImageFont.truetype("arial.ttf", 16)
-        except:
-            font_address = None
-
-        # Draw semi-transparent background for address
+        # Draw address header at top center of photo area
         addr_text = str(address).strip()
-        addr_bbox = draw.textbbox((0, 0), addr_text, font=font_address)
+        addr_bbox = draw.textbbox((0, 0), addr_text, font=font_title)
         addr_width = addr_bbox[2] - addr_bbox[0]
         addr_height = addr_bbox[3] - addr_bbox[1]
 
@@ -172,14 +181,14 @@ def create_engineering_drawing(bg_path, output_path, markers, engineer_note, add
         addr_y = 10
 
         # Draw background box for readability
-        padding = 8
+        padding = 12
         draw.rectangle(
             [addr_x - padding, addr_y - padding, addr_x + addr_width + padding, addr_y + addr_height + padding],
             fill='#000000',
             outline='#3B82F6',
             width=2
         )
-        draw.text((addr_x, addr_y), addr_text, fill='#F8FAFC', font=font_address)
+        draw.text((addr_x, addr_y), addr_text, fill='#F8FAFC', font=font_title)
 
     # Add BRINC logo in the upper-left corner of the photo area.
     logo_path = os.path.join(os.path.dirname(__file__), "images", "BRINC_Logo_White.png")
@@ -219,19 +228,6 @@ def create_engineering_drawing(bg_path, output_path, markers, engineer_note, add
         ("Station", "#F8FAFC")     # White
     ]
     
-    try:
-        font_bubble = ImageFont.truetype("arialbd.ttf", 28)
-        font_legend = ImageFont.truetype("arialbd.ttf", 26)
-        font_title = ImageFont.truetype("arialbd.ttf", 22)
-        font_small = ImageFont.truetype("arial.ttf", 14)
-        font_note = ImageFont.truetype("arial.ttf", 16)
-    except:
-        font_bubble = None
-        font_legend = None
-        font_title = None
-        font_small = None
-        font_note = None
-
     # Draw legend labels and color markers
     y_offset = 40
     for title, color in legend_items:
