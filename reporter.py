@@ -349,10 +349,11 @@ def create_engineering_drawing(bg_path, output_path, markers, engineer_note, add
         text_y = ry1 + (bubble_h - text_h) // 2
         draw.text((text_x, text_y), label_text, fill='#FFFFFF', font=font_bubble)
 
-    # Draw Engineer's Note Box in the Bottom Right
-    note_w, note_h = 240, 250
-    nx1, ny1 = canvas_w - note_w - 15, canvas_h - note_h - 15
-    nx2, ny2 = canvas_w - 15, canvas_h - 15
+    # Draw Engineer's Note Box centered in the sidebar
+    note_w, note_h = 220, 250
+    nx1 = bg_w + (sidebar_w - note_w) // 2
+    ny1 = canvas_h - note_h - 15
+    nx2, ny2 = nx1 + note_w, ny1 + note_h
 
     draw.rectangle([nx1, ny1, nx2, ny2], fill='#FFFFFF', outline='#000000', width=4)
     draw.text((nx1 + 10, ny1 + 10), "ENGINEER'S NOTE:\n-----------------------------", fill='#000000', font=font_note)
