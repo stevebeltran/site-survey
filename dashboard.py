@@ -7,6 +7,7 @@ from PIL import Image
 import datetime
 from google_drive import get_drive_manager
 from gmail_lookup import search_gmail_for_contacts
+import google_oauth
 
 try:
     import pillow_heif
@@ -38,6 +39,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Handle OAuth callback before any other UI
+google_oauth.handle_callback()
+
 # Premium Theme Styling via Custom CSS
 st.markdown("""
 <style>
@@ -47,11 +51,30 @@ st.markdown("""
     }
     .main-header {
         background: linear-gradient(135deg, #1E3A8A 0%, #3B82F6 100%);
-        padding: 24px;
-        border-radius: 12px;
+        padding: 10px 20px;
+        border-radius: 10px;
         color: white;
-        margin-bottom: 25px;
+        margin-bottom: 15px;
         box-shadow: 0 4px 20px rgba(59, 130, 246, 0.15);
+        display: flex;
+        align-items: center;
+        gap: 16px;
+    }
+    .main-header img {
+        height: 38px;
+        width: auto;
+    }
+    .main-header .header-text h1 {
+        margin: 0;
+        font-size: 1.4rem;
+        font-family: 'Outfit', sans-serif;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+    }
+    .main-header .header-text p {
+        margin: 2px 0 0 0;
+        opacity: 0.9;
+        font-size: 0.85rem;
     }
     .metric-card {
         background-color: #1E293B;
@@ -204,17 +227,32 @@ def _lookup_contacts_from_gmail(agency_name, city=None):
     return search_gmail_for_contacts(agency_name, city)
 
 
-# Header
-st.markdown("""
+# Header – compact banner with BRINC logo
+import base64 as _b64
+
+def _logo_b64():
+    logo_path = os.path.join(APP_DIR, "images", "BRINC_Logo_White.png")
+    if os.path.exists(logo_path):
+        with open(logo_path, "rb") as f:
+            return _b64.b64encode(f.read()).decode()
+    return None
+
+_logo_data = _logo_b64()
+_logo_tag = f'<img src="data:image/png;base64,{_logo_data}" />' if _logo_data else ""
+
+st.markdown(f"""
 <div class="main-header">
-    <h1 style="margin:0; font-family:'Outfit',sans-serif; font-weight:800; letter-spacing:-0.5px;">Drone as a First Responder (DFR)</h1>
-    <p style="margin:5px 0 0 0; opacity:0.9; font-size:1.1rem;">Site Survey & Deployment Automation Suite</p>
+    {_logo_tag}
+    <div class="header-text">
+        <h1>Drone as a First Responder (DFR)</h1>
+        <p>Site Survey & Deployment Automation Suite</p>
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
 # Sidebar - Settings & Integration Configs
 with st.sidebar:
-    st.image("https://img.icons8.com/color/96/drone.png", width=80)
+    st.image(os.path.join(APP_DIR, "images", "BRINC_Logo_White.png"), width=160)
     st.title("Settings & APIs")
     
     st.subheader("1. Survey Settings")
@@ -230,27 +268,37 @@ with st.sidebar:
         
     st.info("💡 Mocks are enabled automatically for unset credentials.")
 
-# Ingestion Controls at the top of the page
-st.subheader("📤 Upload Images to Google Drive")
-with st.container(border=True):
-    # Get Drive manager
-    try:
-        drive = get_drive_manager()
-        team_folder_id = st.secrets.get('GOOGLE_DRIVE_TEAM_FOLDER_ID')
-    except Exception as e:
-        st.error(f"Failed to connect to Google Drive: {e}")
-        drive = None
-        team_folder_id = None
+    st.divider()
+    st.subheader("Google Account")
+    user_email = google_oauth.get_user_email()
+    if user_email:
+        st.success(f"Signed in as {user_email}")
+        if st.button("Sign Out", use_container_width=True):
+            st.session_state.pop("google_oauth_token", None)
+            st.session_state.pop("google_oauth_email", None)
+            st.rerun()
+    else:
+        google_oauth.render_connect_button()
 
-    def _on_files_changed():
-        """Reset GPS detection when the user changes the uploaded files."""
-        st.session_state.pop("gps_detected_agency", None)
+# Ingestion Controls – compact layout with action buttons on the right
+# Get Drive manager once up front (returns None if not authenticated)
+drive = get_drive_manager()
+team_folder_id = st.secrets.get('GOOGLE_DRIVE_TEAM_FOLDER_ID', None)
 
+def _on_files_changed():
+    """Reset GPS detection when the user changes the uploaded files."""
+    st.session_state.pop("gps_detected_agency", None)
+
+col_upload, col_actions = st.columns([3, 1], gap="medium")
+
+with col_upload:
+    st.markdown("**📤 Upload Images to Google Drive**")
     uploaded_files = st.file_uploader(
         "Upload raw survey photos (.jpg, .jpeg, .png)",
         accept_multiple_files=True,
         type=["jpg", "jpeg", "png", "heic"],
         on_change=_on_files_changed,
+        label_visibility="collapsed",
     )
 
     # Auto-detect agency from GPS in uploaded photos
@@ -260,11 +308,9 @@ with st.container(border=True):
                 detection = _detect_agency_from_gps(uf.getvalue(), uf.name)
                 if detection and detection.get("agency_name"):
                     st.session_state.gps_detected_agency = detection
-                    # Auto-populate agency info from GPS
                     agency = detection["agency_name"]
                     st.session_state.customer_info["agency_name"] = agency
                     st.session_state.customer_info["agency_address"] = detection.get("address", "")
-                    # Search Gmail for kickoff calls / calendar invites with this agency
                     contacts = _lookup_contacts_from_gmail(agency, detection.get("city", ""))
                     if contacts:
                         if contacts.get("status") == "connected":
@@ -276,10 +322,8 @@ with st.container(border=True):
                     st.rerun()
                     break
             else:
-                # No GPS found in any file — mark as attempted so we don't re-scan
                 st.session_state.gps_detected_agency = {}
 
-    # Show detected info or default
     suggested_name = st.session_state.get("gps_detected_agency", {}).get("agency_name", "")
     client_name = st.text_input(
         "Client/Agency Name",
@@ -288,139 +332,149 @@ with st.container(border=True):
     if suggested_name:
         st.caption(f"Auto-detected from GPS: {st.session_state['gps_detected_agency'].get('address', '')}")
     if st.session_state.pop("gmail_auth_error", None):
-        st.warning("Could not search Gmail for contacts — domain-wide delegation may not be configured. Use the 'Pull Contacts from Gmail' button below to retry.")
+        if google_oauth.is_authenticated():
+            st.warning("Could not search Gmail for contacts. Use the 'Pull Contacts from Gmail' button below to retry.")
+        else:
+            st.warning("Connect your Google account to search Gmail for contacts.")
 
-    uploaded_file_paths = []
-    if uploaded_files and st.button("📤 Upload to Google Drive", use_container_width=True):
-        if not drive or not team_folder_id:
-            st.error("Google Drive not configured. Please check Streamlit secrets.")
-            st.stop()
+with col_actions:
+    st.markdown("&nbsp;", unsafe_allow_html=True)  # spacer to align with uploader
+    if google_oauth.is_authenticated():
+        upload_clicked = st.button("📤 Upload to Drive", use_container_width=True, disabled=not uploaded_files)
+    else:
+        upload_clicked = False
+        google_oauth.render_connect_button("Connect Google to Upload")
+    ingest_clicked = st.button("🚀 Ingest & Process", use_container_width=True, disabled=not uploaded_files)
 
-        with st.spinner("Creating folder structure and uploading images..."):
-            try:
-                # Create client folder with timestamp
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                client_folder_name = f"{client_name}_{timestamp}"
-                client_folder_id = drive.get_or_create_folder(team_folder_id, client_folder_name)
+# Handle Upload button
+uploaded_file_paths = []
+if upload_clicked and uploaded_files:
+    if not drive:
+        st.error("Google Drive not available. Please connect your Google account.")
+        st.stop()
+    if not team_folder_id:
+        st.error("GOOGLE_DRIVE_TEAM_FOLDER_ID not set in Streamlit secrets.")
+        st.stop()
 
-                # Create subfolders
-                raw_images_folder_id = drive.get_or_create_folder(client_folder_id, "01_Raw_Images")
-                processed_folder_id = drive.get_or_create_folder(client_folder_id, "02_Processed_Sites")
-                reports_folder_id = drive.get_or_create_folder(client_folder_id, "03_Reports")
-                metadata_folder_id = drive.get_or_create_folder(client_folder_id, "04_Metadata")
-
-                # Upload images to Drive
-                progress_bar = st.progress(0)
-                for idx, uploaded_file in enumerate(uploaded_files):
-                    # Save temporarily to process
-                    temp_path = f"/tmp/{uploaded_file.name}"
-                    with open(temp_path, "wb") as f:
-                        f.write(uploaded_file.getbuffer())
-
-                    # Upload to Drive
-                    drive.upload_file(temp_path, raw_images_folder_id)
-                    uploaded_file_paths.append(temp_path)
-                    progress_bar.progress((idx + 1) / len(uploaded_files))
-
-                st.success(f"✅ Uploaded {len(uploaded_files)} images to Google Drive!")
-                st.session_state.client_folder_id = client_folder_id
-                st.session_state.raw_images_folder_id = raw_images_folder_id
-                st.session_state.processed_folder_id = processed_folder_id
-                st.session_state.reports_folder_id = reports_folder_id
-                st.session_state.metadata_folder_id = metadata_folder_id
-                st.session_state.client_name = client_name
-                st.session_state.image_paths = uploaded_file_paths
-
-            except Exception as e:
-                st.error(f"Failed to upload to Google Drive: {e}")
-
-    if st.button("🚀 Ingest & Process Sites", use_container_width=True):
-        if not uploaded_files:
-            st.error("Please upload survey photos before processing.")
-            st.stop()
-
-        progress_bar = st.progress(0)
-        progress_text = st.empty()
-
-        def _update_processing_progress(percent, message):
-            progress_bar.progress(max(0, min(100, int(percent))))
-            progress_text.caption(f"{int(percent)}% - {message}")
-
+    with st.spinner("Creating folder structure and uploading images..."):
         try:
-            st.session_state.processed_sites = []
-            st.session_state.active_bg_image = None
-            st.session_state.last_click = {}
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            client_folder_name = f"{client_name}_{timestamp}"
+            client_folder_id = drive.get_or_create_folder(team_folder_id, client_folder_name)
 
-            # Save uploaded files to disk so the processor can read them
-            temp_dir = tempfile.mkdtemp(prefix="dfr_ingest_")
-            image_paths_for_processing = []
-            for uploaded_file in uploaded_files:
-                temp_path = os.path.join(temp_dir, uploaded_file.name)
+            raw_images_folder_id = drive.get_or_create_folder(client_folder_id, "01_Raw_Images")
+            processed_folder_id = drive.get_or_create_folder(client_folder_id, "02_Processed_Sites")
+            reports_folder_id = drive.get_or_create_folder(client_folder_id, "03_Reports")
+            metadata_folder_id = drive.get_or_create_folder(client_folder_id, "04_Metadata")
+
+            progress_bar = st.progress(0)
+            for idx, uploaded_file in enumerate(uploaded_files):
+                temp_path = f"/tmp/{uploaded_file.name}"
                 with open(temp_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
-                image_paths_for_processing.append(temp_path)
-            st.session_state.image_paths = image_paths_for_processing
 
-            # Get Drive manager for processing pipeline
-            drive = None
-            try:
-                drive = get_drive_manager()
-            except Exception as e:
-                st.warning(f"Google Drive not available for this session: {e}")
+                drive.upload_file(temp_path, raw_images_folder_id)
+                uploaded_file_paths.append(temp_path)
+                progress_bar.progress((idx + 1) / len(uploaded_files))
 
-            site_data = processor.process_and_organize_images(
-                source_dir=temp_dir,
-                output_dir=output_dir,
-                radius_meters=proximity_radius,
-                progress_callback=_update_processing_progress,
-                image_paths=image_paths_for_processing,
-                drive_manager=drive,
-                drive_output_folder_id=st.session_state.get('processed_folder_id')
-            )
+            st.success(f"✅ Uploaded {len(uploaded_files)} images to Google Drive!")
+            st.session_state.client_folder_id = client_folder_id
+            st.session_state.raw_images_folder_id = raw_images_folder_id
+            st.session_state.processed_folder_id = processed_folder_id
+            st.session_state.reports_folder_id = reports_folder_id
+            st.session_state.metadata_folder_id = metadata_folder_id
+            st.session_state.client_name = client_name
+            st.session_state.image_paths = uploaded_file_paths
 
-            if not site_data:
-                st.warning("No images with GPS metadata were found in the uploaded files.")
-
-            for site in site_data:
-                site["analysis"] = analyzer.analyze_site(site)
-                site["airfield_info"] = f"{reporter.query_nearest_airfield(site['latitude'], site['longitude'])[0]} ({reporter.query_nearest_airfield(site['latitude'], site['longitude'])[1]:.2f} miles)"
-                site["airspace"] = reporter.query_airspace_class(site["latitude"], site["longitude"])
-                for img in site.get("images", []):
-                    if "selected_for_report" not in img:
-                        img["selected_for_report"] = True
-
-            st.session_state.processed_sites = site_data
-
-            # Auto-populate customer info from metadata on first load ingestion
-            if site_data:
-                first_site = site_data[0]
-                first_address = first_site.get("address", "")
-                # Use the agency_name already computed by processor, fallback to extraction if not available
-                agency_name = first_site.get("agency_name") or f"{_extract_town_state_from_address(first_address)[0]} Police Department"
-
-                # Preserve any contacts already found during GPS detection
-                existing = st.session_state.customer_info
-                st.session_state.customer_info = {
-                    "agency_name": agency_name,
-                    "agency_address": first_address,
-                    "poc_name": existing.get("poc_name", ""),
-                    "poc_email": existing.get("poc_email", ""),
-                    "poc_phone": existing.get("poc_phone", ""),
-                    "it_director": existing.get("it_director", ""),
-                    "it_email": existing.get("it_email", ""),
-                    "facilities_engineer": existing.get("facilities_engineer", ""),
-                    "facilities_email": existing.get("facilities_email", ""),
-                }
-                _save_session_metadata(site_data)
-
-            st.success(f"Successfully processed {len(site_data)} unique DFR sites!")
-            progress_text.caption("100% - Complete")
-            st.rerun()
         except Exception as e:
-            st.error(f"Processing failed: {e}")
-        finally:
-            progress_bar.empty()
-            progress_text.empty()
+            st.error(f"Failed to upload to Google Drive: {e}")
+
+# Handle Ingest button
+if ingest_clicked:
+    if not uploaded_files:
+        st.error("Please upload survey photos before processing.")
+        st.stop()
+
+    progress_bar = st.progress(0)
+    progress_text = st.empty()
+
+    def _update_processing_progress(percent, message):
+        progress_bar.progress(max(0, min(100, int(percent))))
+        progress_text.caption(f"{int(percent)}% - {message}")
+
+    try:
+        st.session_state.processed_sites = []
+        st.session_state.active_bg_image = None
+        st.session_state.last_click = {}
+
+        # Save uploaded files to disk so the processor can read them
+        temp_dir = tempfile.mkdtemp(prefix="dfr_ingest_")
+        image_paths_for_processing = []
+        for uploaded_file in uploaded_files:
+            temp_path = os.path.join(temp_dir, uploaded_file.name)
+            with open(temp_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            image_paths_for_processing.append(temp_path)
+        st.session_state.image_paths = image_paths_for_processing
+
+        # Get Drive manager for processing pipeline
+        drive = None
+        try:
+            drive = get_drive_manager()
+        except Exception as e:
+            st.warning(f"Google Drive not available for this session: {e}")
+
+        site_data = processor.process_and_organize_images(
+            source_dir=temp_dir,
+            output_dir=output_dir,
+            radius_meters=proximity_radius,
+            progress_callback=_update_processing_progress,
+            image_paths=image_paths_for_processing,
+            drive_manager=drive,
+            drive_output_folder_id=st.session_state.get('processed_folder_id')
+        )
+
+        if not site_data:
+            st.warning("No images with GPS metadata were found in the uploaded files.")
+
+        for site in site_data:
+            site["analysis"] = analyzer.analyze_site(site)
+            site["airfield_info"] = f"{reporter.query_nearest_airfield(site['latitude'], site['longitude'])[0]} ({reporter.query_nearest_airfield(site['latitude'], site['longitude'])[1]:.2f} miles)"
+            site["airspace"] = reporter.query_airspace_class(site["latitude"], site["longitude"])
+            for img in site.get("images", []):
+                if "selected_for_report" not in img:
+                    img["selected_for_report"] = True
+
+        st.session_state.processed_sites = site_data
+
+        # Auto-populate customer info from metadata on first load ingestion
+        if site_data:
+            first_site = site_data[0]
+            first_address = first_site.get("address", "")
+            agency_name = first_site.get("agency_name") or f"{_extract_town_state_from_address(first_address)[0]} Police Department"
+
+            existing = st.session_state.customer_info
+            st.session_state.customer_info = {
+                "agency_name": agency_name,
+                "agency_address": first_address,
+                "poc_name": existing.get("poc_name", ""),
+                "poc_email": existing.get("poc_email", ""),
+                "poc_phone": existing.get("poc_phone", ""),
+                "it_director": existing.get("it_director", ""),
+                "it_email": existing.get("it_email", ""),
+                "facilities_engineer": existing.get("facilities_engineer", ""),
+                "facilities_email": existing.get("facilities_email", ""),
+            }
+            _save_session_metadata(site_data)
+
+        st.success(f"Successfully processed {len(site_data)} unique DFR sites!")
+        progress_text.caption("100% - Complete")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Processing failed: {e}")
+    finally:
+        progress_bar.empty()
+        progress_text.empty()
 
 # Layout Columns
 tab1, tab2, tab3 = st.tabs(["📋 Survey Pipeline", "🔗 Workflow Sync", "📈 Analytics & Logs"])
@@ -437,27 +491,30 @@ with tab1:
         st.session_state.customer_info["poc_email"] = st.text_input("POC Email", value=st.session_state.customer_info["poc_email"])
     with col_c3:
         st.session_state.customer_info["it_director"] = st.text_input("IT Contact", value=st.session_state.customer_info["it_director"])
-        if st.button("🔌 Pull Contacts from Gmail", use_container_width=True):
-            agency = st.session_state.customer_info.get("agency_name", "")
-            if not agency:
-                st.warning("Enter or detect an Agency Name first.")
-            else:
-                city = st.session_state.get("gps_detected_agency", {}).get("city", "")
-                contacts = _lookup_contacts_from_gmail(agency, city)
-                status = contacts.get("status", "no_results") if contacts else "no_results"
-                if status == "auth_error":
-                    err = contacts.get("error", "")
-                    st.error(f"Cannot connect to Gmail. Domain-wide delegation may not be configured for the service account.\n\n`{err}`")
-                    st.session_state.integration_logs.append(f"[Gmail API] Auth error: {err}")
-                elif status == "connected" and any(contacts.get(k) for k in ("poc_name", "poc_email", "it_director", "it_email")):
-                    for key in ("poc_name", "poc_email", "it_director", "it_email"):
-                        if contacts.get(key):
-                            st.session_state.customer_info[key] = contacts[key]
-                    st.session_state.integration_logs.append(f"[Gmail API] Found contacts for {agency}")
-                    st.rerun()
+        if google_oauth.is_authenticated():
+            if st.button("🔌 Pull Contacts from Gmail", use_container_width=True):
+                agency = st.session_state.customer_info.get("agency_name", "")
+                if not agency:
+                    st.warning("Enter or detect an Agency Name first.")
                 else:
-                    st.info(f"Connected to Gmail but no matching threads or calendar invites found for \"{agency}\".")
-                    st.session_state.integration_logs.append(f"[Gmail API] Connected — no contacts found for {agency}")
+                    city = st.session_state.get("gps_detected_agency", {}).get("city", "")
+                    contacts = _lookup_contacts_from_gmail(agency, city)
+                    status = contacts.get("status", "no_results") if contacts else "no_results"
+                    if status == "auth_error":
+                        err = contacts.get("error", "")
+                        st.error(f"Gmail authentication error: {err}")
+                        st.session_state.integration_logs.append(f"[Gmail API] Auth error: {err}")
+                    elif status == "connected" and any(contacts.get(k) for k in ("poc_name", "poc_email", "it_director", "it_email")):
+                        for key in ("poc_name", "poc_email", "it_director", "it_email"):
+                            if contacts.get(key):
+                                st.session_state.customer_info[key] = contacts[key]
+                        st.session_state.integration_logs.append(f"[Gmail API] Found contacts for {agency}")
+                        st.rerun()
+                    else:
+                        st.info(f"Connected to Gmail but no matching threads or calendar invites found for \"{agency}\".")
+                        st.session_state.integration_logs.append(f"[Gmail API] Connected — no contacts found for {agency}")
+        else:
+            google_oauth.render_connect_button("Connect Google for Gmail Lookup")
 
     st.divider()
 
