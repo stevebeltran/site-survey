@@ -280,8 +280,15 @@ with st.container(border=True):
                 st.error(f"Failed to upload to Google Drive: {e}")
 
     if st.button("🚀 Ingest & Process Sites", use_container_width=True):
-        if not uploaded_files:
-            st.error("Please upload one or more raw survey photos first.")
+        # Determine image paths: prefer uploaded files, fall back to source_dir scan
+        resolved_source = _resolve_app_path(source_dir)
+        has_source_images = os.path.isdir(resolved_source) and any(
+            f.lower().endswith(SUPPORTED_IMAGE_EXTENSIONS)
+            for f in os.listdir(resolved_source)
+        ) if os.path.isdir(resolved_source) else False
+
+        if not uploaded_files and not has_source_images:
+            st.error("Please upload survey photos or ensure the Source Images Directory contains images.")
             st.stop()
 
         progress_bar = st.progress(0)
@@ -296,6 +303,19 @@ with st.container(border=True):
             st.session_state.active_bg_image = None
             st.session_state.last_click = {}
 
+            # Save uploaded files to disk so the processor can read them
+            image_paths_for_processing = None  # None = let processor scan source_dir
+            if uploaded_files:
+                import tempfile
+                temp_dir = tempfile.mkdtemp(prefix="dfr_ingest_")
+                image_paths_for_processing = []
+                for uploaded_file in uploaded_files:
+                    temp_path = os.path.join(temp_dir, uploaded_file.name)
+                    with open(temp_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    image_paths_for_processing.append(temp_path)
+                st.session_state.image_paths = image_paths_for_processing
+
             # Get Drive manager for processing pipeline
             drive = None
             try:
@@ -308,7 +328,7 @@ with st.container(border=True):
                 output_dir=output_dir,
                 radius_meters=proximity_radius,
                 progress_callback=_update_processing_progress,
-                image_paths=uploaded_file_paths,
+                image_paths=image_paths_for_processing,
                 drive_manager=drive,
                 drive_output_folder_id=st.session_state.get('processed_folder_id')
             )
