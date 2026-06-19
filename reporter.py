@@ -1,10 +1,64 @@
 import os
+import re
 import datetime
 import requests
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from geopy.distance import geodesic
 from PIL import Image, ImageDraw, ImageFont
+
+
+def _format_short_address(full_address):
+    """Shorten a Nominatim address to just street, city, state zip."""
+    if not full_address:
+        return str(full_address)
+    addr = str(full_address).strip()
+    if addr.startswith("Site Coordinate"):
+        return addr
+
+    parts = [p.strip() for p in addr.split(',') if p.strip()]
+
+    # Remove country names and county/parish parts
+    excluded = {'united states', 'usa', 'us'}
+    filtered = [
+        p for p in parts
+        if p.lower() not in excluded
+        and 'county' not in p.lower()
+        and 'parish' not in p.lower()
+    ]
+
+    # Drop leading POI/business name when followed by a house number
+    if (len(filtered) >= 2
+            and not filtered[0][0].isdigit()
+            and filtered[1].strip().isdigit()):
+        filtered = filtered[1:]
+
+    # Merge house number + street name  ("1075", "Parkway Drive" -> "1075 Parkway Drive")
+    combined = []
+    i = 0
+    while i < len(filtered):
+        if (filtered[i].isdigit()
+                and i + 1 < len(filtered)
+                and not filtered[i + 1][0].isdigit()):
+            combined.append(f"{filtered[i]} {filtered[i + 1]}")
+            i += 2
+        else:
+            combined.append(filtered[i])
+            i += 1
+
+    # Merge state + zip  ("Indiana", "46077" -> "Indiana 46077")
+    final = []
+    i = 0
+    while i < len(combined):
+        if (i + 1 < len(combined)
+                and re.match(r'^\d{5}(-\d{4})?$', combined[i + 1])):
+            final.append(f"{combined[i]} {combined[i + 1]}")
+            i += 2
+        else:
+            final.append(combined[i])
+            i += 1
+
+    return ', '.join(final)
 
 def query_nearest_airfield(lat, lon):
     """
@@ -171,7 +225,7 @@ def create_engineering_drawing(bg_path, output_path, markers, engineer_note, add
     # Add Address at the top center of the photo area
     if address:
         # Draw address header at top center of photo area
-        addr_text = str(address).strip()
+        addr_text = _format_short_address(address)
         addr_bbox = draw.textbbox((0, 0), addr_text, font=font_title)
         addr_width = addr_bbox[2] - addr_bbox[0]
         addr_height = addr_bbox[3] - addr_bbox[1]

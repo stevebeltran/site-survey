@@ -1,10 +1,12 @@
 import os
 import json
+import tempfile
 import streamlit as st
 import pandas as pd
 from PIL import Image
 import datetime
 from google_drive import get_drive_manager
+from gmail_lookup import search_gmail_for_contacts
 
 try:
     import pillow_heif
@@ -169,6 +171,39 @@ def _get_displayable_image_path(image_path):
         print(f"Image preview unavailable for {image_path}: {e}")
         return None
 
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _detect_agency_from_gps(first_file_bytes, first_file_name):
+    """Extract GPS from the first uploaded image, reverse geocode, and derive agency info."""
+    try:
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(first_file_name)[1])
+        tmp.write(first_file_bytes)
+        tmp.close()
+        lat, lon, _ = processor.extract_exif_gps(tmp.name)
+        os.unlink(tmp.name)
+        if lat is None or lon is None:
+            return None
+        full_address = processor.reverse_geocode(lat, lon)
+        city = processor.extract_city_from_address(full_address)
+        agency_name = f"{city} Police Department" if city else None
+        return {
+            "lat": lat,
+            "lon": lon,
+            "address": full_address,
+            "city": city,
+            "agency_name": agency_name,
+        }
+    except Exception as e:
+        print(f"GPS detection error: {e}")
+        return None
+
+
+@st.cache_data(ttl=600, show_spinner="Searching Gmail for agency contacts...")
+def _lookup_contacts_from_gmail(agency_name, city=None):
+    """Search Gmail and Calendar for kickoff calls / invites with this agency."""
+    return search_gmail_for_contacts(agency_name, city)
+
+
 # Header
 st.markdown("""
 <div class="main-header">
@@ -182,9 +217,8 @@ with st.sidebar:
     st.image("https://img.icons8.com/color/96/drone.png", width=80)
     st.title("Settings & APIs")
     
-    st.subheader("1. Survey Paths")
-    source_dir = st.text_input("Source Images Directory", value="./mock_raw_images").strip().replace('"', '').replace("'", "")
-    output_dir = st.text_input("Output Organised Directory", value="./processed_sites").strip().replace('"', '').replace("'", "")
+    st.subheader("1. Survey Settings")
+    output_dir = "./processed_sites"
     proximity_radius = st.slider("Clustering Proximity (Meters)", min_value=10, max_value=500, value=90)
     
     st.subheader("2. Integrations & Credentials")
@@ -195,24 +229,6 @@ with st.sidebar:
         gdrive_folder = st.text_input("Google Drive Folder ID")
         
     st.info("💡 Mocks are enabled automatically for unset credentials.")
-
-# Create demo files helper
-def setup_mock_data():
-    if not os.path.exists(source_dir):
-        os.makedirs(source_dir)
-        st.info("Creating mock survey images in raw source directory for demo...")
-        
-        # Site 1 - Fire Station 1
-        img1 = Image.new('RGB', (100, 100), color = 'red')
-        img1.save(os.path.join(source_dir, "fs1_roof_access_hatch.jpg"))
-        
-        # Site 2 - Water Tower
-        img2 = Image.new('RGB', (100, 100), color = 'blue')
-        img2.save(os.path.join(source_dir, "watertower_mounting_mast.jpg"))
-        
-        st.success("Mock images created successfully! Click 'Ingest & Process' to run.")
-
-setup_mock_data()
 
 # Ingestion Controls at the top of the page
 st.subheader("📤 Upload Images to Google Drive")
@@ -226,14 +242,53 @@ with st.container(border=True):
         drive = None
         team_folder_id = None
 
-    # Get client name for folder
-    client_name = st.text_input("Client/Agency Name", value="Untitled_Site_Survey")
+    def _on_files_changed():
+        """Reset GPS detection when the user changes the uploaded files."""
+        st.session_state.pop("gps_detected_agency", None)
 
     uploaded_files = st.file_uploader(
         "Upload raw survey photos (.jpg, .jpeg, .png)",
         accept_multiple_files=True,
         type=["jpg", "jpeg", "png", "heic"],
+        on_change=_on_files_changed,
     )
+
+    # Auto-detect agency from GPS in uploaded photos
+    if uploaded_files and "gps_detected_agency" not in st.session_state:
+        with st.spinner("Detecting location from photo GPS data..."):
+            for uf in uploaded_files:
+                detection = _detect_agency_from_gps(uf.getvalue(), uf.name)
+                if detection and detection.get("agency_name"):
+                    st.session_state.gps_detected_agency = detection
+                    # Auto-populate agency info from GPS
+                    agency = detection["agency_name"]
+                    st.session_state.customer_info["agency_name"] = agency
+                    st.session_state.customer_info["agency_address"] = detection.get("address", "")
+                    # Search Gmail for kickoff calls / calendar invites with this agency
+                    contacts = _lookup_contacts_from_gmail(agency, detection.get("city", ""))
+                    if contacts:
+                        if contacts.get("status") == "connected":
+                            for key in ("poc_name", "poc_email", "it_director", "it_email"):
+                                if contacts.get(key):
+                                    st.session_state.customer_info[key] = contacts[key]
+                        elif contacts.get("status") == "auth_error":
+                            st.session_state["gmail_auth_error"] = contacts.get("error", "")
+                    st.rerun()
+                    break
+            else:
+                # No GPS found in any file — mark as attempted so we don't re-scan
+                st.session_state.gps_detected_agency = {}
+
+    # Show detected info or default
+    suggested_name = st.session_state.get("gps_detected_agency", {}).get("agency_name", "")
+    client_name = st.text_input(
+        "Client/Agency Name",
+        value=suggested_name or "Untitled_Site_Survey",
+    )
+    if suggested_name:
+        st.caption(f"Auto-detected from GPS: {st.session_state['gps_detected_agency'].get('address', '')}")
+    if st.session_state.pop("gmail_auth_error", None):
+        st.warning("Could not search Gmail for contacts — domain-wide delegation may not be configured. Use the 'Pull Contacts from Gmail' button below to retry.")
 
     uploaded_file_paths = []
     if uploaded_files and st.button("📤 Upload to Google Drive", use_container_width=True):
@@ -280,15 +335,8 @@ with st.container(border=True):
                 st.error(f"Failed to upload to Google Drive: {e}")
 
     if st.button("🚀 Ingest & Process Sites", use_container_width=True):
-        # Determine image paths: prefer uploaded files, fall back to source_dir scan
-        resolved_source = _resolve_app_path(source_dir)
-        has_source_images = os.path.isdir(resolved_source) and any(
-            f.lower().endswith(SUPPORTED_IMAGE_EXTENSIONS)
-            for f in os.listdir(resolved_source)
-        ) if os.path.isdir(resolved_source) else False
-
-        if not uploaded_files and not has_source_images:
-            st.error("Please upload survey photos or ensure the Source Images Directory contains images.")
+        if not uploaded_files:
+            st.error("Please upload survey photos before processing.")
             st.stop()
 
         progress_bar = st.progress(0)
@@ -304,17 +352,14 @@ with st.container(border=True):
             st.session_state.last_click = {}
 
             # Save uploaded files to disk so the processor can read them
-            image_paths_for_processing = None  # None = let processor scan source_dir
-            if uploaded_files:
-                import tempfile
-                temp_dir = tempfile.mkdtemp(prefix="dfr_ingest_")
-                image_paths_for_processing = []
-                for uploaded_file in uploaded_files:
-                    temp_path = os.path.join(temp_dir, uploaded_file.name)
-                    with open(temp_path, "wb") as f:
-                        f.write(uploaded_file.getbuffer())
-                    image_paths_for_processing.append(temp_path)
-                st.session_state.image_paths = image_paths_for_processing
+            temp_dir = tempfile.mkdtemp(prefix="dfr_ingest_")
+            image_paths_for_processing = []
+            for uploaded_file in uploaded_files:
+                temp_path = os.path.join(temp_dir, uploaded_file.name)
+                with open(temp_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                image_paths_for_processing.append(temp_path)
+            st.session_state.image_paths = image_paths_for_processing
 
             # Get Drive manager for processing pipeline
             drive = None
@@ -324,7 +369,7 @@ with st.container(border=True):
                 st.warning(f"Google Drive not available for this session: {e}")
 
             site_data = processor.process_and_organize_images(
-                source_dir=source_dir,
+                source_dir=temp_dir,
                 output_dir=output_dir,
                 radius_meters=proximity_radius,
                 progress_callback=_update_processing_progress,
@@ -353,16 +398,18 @@ with st.container(border=True):
                 # Use the agency_name already computed by processor, fallback to extraction if not available
                 agency_name = first_site.get("agency_name") or f"{_extract_town_state_from_address(first_address)[0]} Police Department"
 
+                # Preserve any contacts already found during GPS detection
+                existing = st.session_state.customer_info
                 st.session_state.customer_info = {
                     "agency_name": agency_name,
                     "agency_address": first_address,
-                    "poc_name": "",
-                    "poc_email": "",
-                    "poc_phone": "",
-                    "it_director": "",
-                    "it_email": "",
-                    "facilities_engineer": "",
-                    "facilities_email": "",
+                    "poc_name": existing.get("poc_name", ""),
+                    "poc_email": existing.get("poc_email", ""),
+                    "poc_phone": existing.get("poc_phone", ""),
+                    "it_director": existing.get("it_director", ""),
+                    "it_email": existing.get("it_email", ""),
+                    "facilities_engineer": existing.get("facilities_engineer", ""),
+                    "facilities_email": existing.get("facilities_email", ""),
                 }
                 _save_session_metadata(site_data)
 
@@ -390,11 +437,27 @@ with tab1:
         st.session_state.customer_info["poc_email"] = st.text_input("POC Email", value=st.session_state.customer_info["poc_email"])
     with col_c3:
         st.session_state.customer_info["it_director"] = st.text_input("IT Contact", value=st.session_state.customer_info["it_director"])
-        if st.button("🔌 Pull Customer Info (HubSpot + Gmail)", use_container_width=True):
-            st.session_state.integration_logs.append("[HubSpot API] GET /crm/v3/deals - Customer lookup requested")
-            st.session_state.integration_logs.append("[Gmail API] GET /messages - Contact lookup requested")
-            st.info("Agency info comes from the geotagged photos. Contact fields remain blank until filled from HubSpot, Jira, or Google.")
-            st.rerun()
+        if st.button("🔌 Pull Contacts from Gmail", use_container_width=True):
+            agency = st.session_state.customer_info.get("agency_name", "")
+            if not agency:
+                st.warning("Enter or detect an Agency Name first.")
+            else:
+                city = st.session_state.get("gps_detected_agency", {}).get("city", "")
+                contacts = _lookup_contacts_from_gmail(agency, city)
+                status = contacts.get("status", "no_results") if contacts else "no_results"
+                if status == "auth_error":
+                    err = contacts.get("error", "")
+                    st.error(f"Cannot connect to Gmail. Domain-wide delegation may not be configured for the service account.\n\n`{err}`")
+                    st.session_state.integration_logs.append(f"[Gmail API] Auth error: {err}")
+                elif status == "connected" and any(contacts.get(k) for k in ("poc_name", "poc_email", "it_director", "it_email")):
+                    for key in ("poc_name", "poc_email", "it_director", "it_email"):
+                        if contacts.get(key):
+                            st.session_state.customer_info[key] = contacts[key]
+                    st.session_state.integration_logs.append(f"[Gmail API] Found contacts for {agency}")
+                    st.rerun()
+                else:
+                    st.info(f"Connected to Gmail but no matching threads or calendar invites found for \"{agency}\".")
+                    st.session_state.integration_logs.append(f"[Gmail API] Connected — no contacts found for {agency}")
 
     st.divider()
 

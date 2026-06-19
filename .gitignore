@@ -50,3 +50,8 @@ Thumbs.db
 .env.local
 .streamlit/secrets.toml
 .streamlit/secrets.toml.local
+.streamlit/STREAMLIT_SECRETS_CORRECT.txt
+
+# Docs / superpowers (local only)
+docs/
+.superpowers/
