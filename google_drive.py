@@ -49,7 +49,9 @@ class GoogleDriveManager:
             q=query,
             spaces='drive',
             fields='files(id, name)',
-            pageSize=1
+            pageSize=1,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
         ).execute()
 
         if results.get('error'):
@@ -67,7 +69,8 @@ class GoogleDriveManager:
         }
         folder = self.service.files().create(
             body=file_metadata,
-            fields='id'
+            fields='id',
+            supportsAllDrives=True
         ).execute()
 
         if folder.get('error'):
@@ -101,7 +104,8 @@ class GoogleDriveManager:
         file_obj = self.service.files().create(
             body=file_metadata,
             media_body=media,
-            fields='id'
+            fields='id',
+            supportsAllDrives=True
         ).execute()
 
         if file_obj.get('error'):
@@ -131,7 +135,8 @@ class GoogleDriveManager:
         file_obj = self.service.files().create(
             body=file_metadata,
             media_body=media,
-            fields='id'
+            fields='id',
+            supportsAllDrives=True
         ).execute()
 
         if file_obj.get('error'):
@@ -148,7 +153,7 @@ class GoogleDriveManager:
             local_path: Local destination path
         """
         try:
-            request = self.service.files().get_media(fileId=file_id)
+            request = self.service.files().get_media(fileId=file_id, supportsAllDrives=True)
             with open(local_path, 'wb') as f:
                 while True:
                     try:
@@ -186,7 +191,9 @@ class GoogleDriveManager:
             q=query,
             spaces='drive',
             fields='files(id, name, mimeType, size)',
-            pageSize=100
+            pageSize=100,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
         ).execute()
 
         if results.get('error'):
