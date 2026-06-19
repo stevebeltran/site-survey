@@ -228,14 +228,24 @@ def create_engineering_drawing(bg_path, output_path, markers, engineer_note, add
         ("Station", "#F8FAFC")     # White
     ]
     
-    # Draw legend labels and color markers
-    y_offset = 40
-    for title, color in legend_items:
-        draw.text((bg_w + 50, y_offset), title, fill=color, font=font_legend)
-        # Draw a little colored symbol next to it
-        draw.rectangle([bg_w + 20, y_offset + 5, bg_w + 35, y_offset + 20], fill=color)
-        y_offset += 65
-        
+    # Draw "LEGEND" header
+    legend_header_y = 25
+    draw.text((bg_w + 20, legend_header_y), "LEGEND", fill='#F8FAFC', font=font_title)
+    draw.line([(bg_w + 20, legend_header_y + 30), (canvas_w - 20, legend_header_y + 30)], fill='#334155', width=1)
+
+    # Center legend items vertically in sidebar (below header, above brinc text)
+    legend_item_spacing = 45
+    legend_total_height = len(legend_items) * legend_item_spacing
+    legend_start_y = legend_header_y + 50  # Start below header line
+
+    for i, (title, color) in enumerate(legend_items):
+        item_y = legend_start_y + i * legend_item_spacing
+        # Draw colored circle swatch (20px diameter)
+        cx, cy = bg_w + 30, item_y + 10
+        draw.ellipse([cx - 10, cy - 10, cx + 10, cy + 10], fill=color)
+        # Draw label text
+        draw.text((bg_w + 55, item_y), title, fill=color, font=font_legend)
+
     # Draw "brinc" stylized logo at the bottom right
     draw.text((bg_w + 20, canvas_h - 60), "brinc", fill='#F8FAFC', font=font_legend)
 
