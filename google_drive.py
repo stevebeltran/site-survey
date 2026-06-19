@@ -13,19 +13,24 @@ import streamlit as st
 class GoogleDriveManager:
     """Manages Google Drive operations: auth, file upload/download, folder creation."""
 
-    def __init__(self, credentials_json_str):
+    def __init__(self, credentials):
         """
-        Initialize with credentials JSON string from Streamlit secrets.
+        Initialize with either OAuth Credentials or a service account JSON string.
 
         Args:
-            credentials_json_str: JSON string of service account credentials
+            credentials: google.oauth2.credentials.Credentials object,
+                         OR a JSON string of service account credentials
         """
+        from google.oauth2.credentials import Credentials
         try:
-            creds_dict = json.loads(credentials_json_str)
-            self.credentials = service_account.Credentials.from_service_account_info(
-                creds_dict,
-                scopes=['https://www.googleapis.com/auth/drive']
-            )
+            if isinstance(credentials, str):
+                creds_dict = json.loads(credentials)
+                self.credentials = service_account.Credentials.from_service_account_info(
+                    creds_dict,
+                    scopes=['https://www.googleapis.com/auth/drive']
+                )
+            else:
+                self.credentials = credentials
             self.service = build('drive', 'v3', credentials=self.credentials)
         except Exception as e:
             raise ValueError(f"Failed to initialize Google Drive: {e}")
@@ -203,13 +208,26 @@ class GoogleDriveManager:
 
 
 def get_drive_manager():
-    """Get authenticated Drive manager from Streamlit secrets."""
+    """Get authenticated Drive manager, preferring OAuth over service account.
+
+    Returns GoogleDriveManager or None if neither auth method is available.
+    """
+    import google_oauth
+
+    # Try OAuth credentials first
+    oauth_creds = google_oauth.get_credentials()
+    if oauth_creds:
+        try:
+            return GoogleDriveManager(oauth_creds)
+        except Exception:
+            pass
+
+    # Fall back to service account from secrets
     try:
         credentials_json = st.secrets.get('GOOGLE_DRIVE_CREDENTIALS')
-        if not credentials_json:
-            st.error("Google Drive credentials not configured in Streamlit secrets.")
-            st.stop()
-        return GoogleDriveManager(credentials_json)
-    except Exception as e:
-        st.error(f"Failed to authenticate with Google Drive: {e}")
-        st.stop()
+        if credentials_json:
+            return GoogleDriveManager(credentials_json)
+    except Exception:
+        pass
+
+    return None

@@ -144,3 +144,28 @@ class TestGmailServiceIntegration:
         mock_oauth.get_credentials.return_value = None
         result = _get_gmail_service()
         assert result is None
+
+
+class TestDriveManagerOAuth:
+    """Test that GoogleDriveManager accepts OAuth credentials."""
+
+    @patch("google_drive.build")
+    def test_init_with_credentials_object(self, mock_build):
+        from google_drive import GoogleDriveManager
+        from unittest.mock import MagicMock
+        mock_creds = MagicMock()
+        mock_build.return_value = MagicMock()
+        manager = GoogleDriveManager(mock_creds)
+        mock_build.assert_called_once_with('drive', 'v3', credentials=mock_creds)
+        assert manager.service is not None
+
+    @patch("google_drive.build")
+    def test_init_with_json_string_still_works(self, mock_build):
+        from google_drive import GoogleDriveManager
+        from unittest.mock import patch as inner_patch
+        mock_build.return_value = MagicMock()
+        fake_creds_json = '{"type":"service_account","project_id":"test","private_key_id":"x","private_key":"-----BEGIN RSA PRIVATE KEY-----\\nMIIBogIBAAJBALRiMLaH\\n-----END RSA PRIVATE KEY-----\\n","client_email":"test@test.iam.gserviceaccount.com","client_id":"123","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token"}'
+        with inner_patch("google_drive.service_account.Credentials.from_service_account_info") as mock_sa:
+            mock_sa.return_value = MagicMock()
+            manager = GoogleDriveManager(fake_creds_json)
+            mock_sa.assert_called_once()
