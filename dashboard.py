@@ -679,6 +679,43 @@ with tab1:
                             except Exception as e:
                                 st.error(f"Error registering click: {e}")
 
+                    # Marker list with individual delete buttons
+                    current_markers = selected_site['markers_by_image'].get(st.session_state.active_bg_image, [])
+                    if current_markers:
+                        st.markdown("**Placed Markers:**")
+                        color_emoji = {
+                            'Electric': '🔴',
+                            'Data': '🟠',
+                            'RF': '🟣',
+                            'Unistrut': '⚪',
+                            'Lift': '🟡',
+                        }
+                        for idx, marker in enumerate(current_markers):
+                            mcol1, mcol2 = st.columns([3, 1])
+                            with mcol1:
+                                emoji = color_emoji.get(marker.get('type', ''), '⚫')
+                                st.markdown(f"{emoji} **{marker.get('type', '')}** — {marker.get('label', '')}")
+                            with mcol2:
+                                if st.button("✕ Remove", key=f"del_marker_{selected_site['site_id']}_{st.session_state.active_bg_image}_{idx}"):
+                                    selected_site['markers_by_image'][st.session_state.active_bg_image].pop(idx)
+                                    # Re-render drawing
+                                    if selected_site['markers_by_image'][st.session_state.active_bg_image]:
+                                        reporter.create_engineering_drawing(
+                                            bg_display_path or bg_path,
+                                            output_drawing_path,
+                                            selected_site['markers_by_image'][st.session_state.active_bg_image],
+                                            selected_site['eng_note'],
+                                            address=selected_site['address'],
+                                            image_placements=selected_site['image_placements_by_image'].get(st.session_state.active_bg_image, []),
+                                            images_dir=images_dir
+                                        )
+                                    elif os.path.exists(output_drawing_path):
+                                        os.remove(output_drawing_path)
+                                    _save_session_metadata(st.session_state.processed_sites)
+                                    st.rerun()
+                    else:
+                        st.caption("No markers placed yet.")
+
                     # Action Buttons
                     col_btn1, col_btn2 = st.columns(2)
                     with col_btn1:
