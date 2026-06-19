@@ -1,51 +1,33 @@
 """Gmail API wrapper for searching threads and extracting contact info.
 
-Uses the same service account as google_drive.py with domain-wide delegation
-to read the user's Gmail and find kickoff call threads / calendar invites
-for a given agency name.
+Uses OAuth credentials from google_oauth.py to access the authenticated
+user's Gmail and Calendar. Searches for kickoff call threads and calendar
+invites for a given agency name.
 """
 
 import json
 import re
 import base64
 from email.utils import parseaddr
-from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import streamlit as st
-
-# The user whose mailbox to search via domain-wide delegation
-DELEGATED_USER = "steven.beltran@brincdrones.com"
-
-GMAIL_SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/calendar.readonly",
-]
+import google_oauth
 
 
 def _get_gmail_service():
-    """Build a Gmail API service using delegated credentials."""
-    creds_json = st.secrets.get("GOOGLE_DRIVE_CREDENTIALS")
-    if not creds_json:
+    """Build a Gmail API service using the current user's OAuth credentials."""
+    creds = google_oauth.get_credentials()
+    if not creds:
         return None
-    creds_dict = json.loads(creds_json)
-    credentials = service_account.Credentials.from_service_account_info(
-        creds_dict, scopes=GMAIL_SCOPES
-    )
-    delegated = credentials.with_subject(DELEGATED_USER)
-    return build("gmail", "v1", credentials=delegated)
+    return build("gmail", "v1", credentials=creds)
 
 
 def _get_calendar_service():
-    """Build a Google Calendar API service using delegated credentials."""
-    creds_json = st.secrets.get("GOOGLE_DRIVE_CREDENTIALS")
-    if not creds_json:
+    """Build a Google Calendar API service using the current user's OAuth credentials."""
+    creds = google_oauth.get_credentials()
+    if not creds:
         return None
-    creds_dict = json.loads(creds_json)
-    credentials = service_account.Credentials.from_service_account_info(
-        creds_dict, scopes=GMAIL_SCOPES
-    )
-    delegated = credentials.with_subject(DELEGATED_USER)
-    return build("calendar", "v3", credentials=delegated)
+    return build("calendar", "v3", credentials=creds)
 
 
 def _extract_external_contacts(headers, my_domain="brincdrones.com"):

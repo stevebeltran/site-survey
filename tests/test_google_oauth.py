@@ -122,3 +122,25 @@ class TestGetUserEmail:
         from google_oauth import get_user_email
         mock_st.session_state = {}
         assert get_user_email() is None
+
+
+class TestGmailServiceIntegration:
+    """Test that gmail_lookup uses OAuth credentials."""
+
+    @patch("gmail_lookup.google_oauth")
+    @patch("gmail_lookup.build")
+    def test_get_gmail_service_uses_oauth(self, mock_build, mock_oauth):
+        from gmail_lookup import _get_gmail_service
+        mock_creds = MagicMock()
+        mock_oauth.get_credentials.return_value = mock_creds
+        mock_build.return_value = MagicMock()
+        result = _get_gmail_service()
+        mock_build.assert_called_once_with("gmail", "v1", credentials=mock_creds)
+        assert result is not None
+
+    @patch("gmail_lookup.google_oauth")
+    def test_get_gmail_service_returns_none_when_not_authenticated(self, mock_oauth):
+        from gmail_lookup import _get_gmail_service
+        mock_oauth.get_credentials.return_value = None
+        result = _get_gmail_service()
+        assert result is None
