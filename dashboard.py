@@ -3,6 +3,8 @@ import json
 import streamlit as st
 import pandas as pd
 from PIL import Image
+import datetime
+from google_drive import get_drive_manager
 
 try:
     import pillow_heif
@@ -81,6 +83,20 @@ if "customer_info" not in st.session_state:
     }
 if "active_bg_image" not in st.session_state:
     st.session_state.active_bg_image = None
+if "client_folder_id" not in st.session_state:
+    st.session_state.client_folder_id = None
+if "raw_images_folder_id" not in st.session_state:
+    st.session_state.raw_images_folder_id = None
+if "processed_folder_id" not in st.session_state:
+    st.session_state.processed_folder_id = None
+if "reports_folder_id" not in st.session_state:
+    st.session_state.reports_folder_id = None
+if "metadata_folder_id" not in st.session_state:
+    st.session_state.metadata_folder_id = None
+if "client_name" not in st.session_state:
+    st.session_state.client_name = None
+if "image_paths" not in st.session_state:
+    st.session_state.image_paths = []
 
 SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tiff", ".webp", ".heic", ".heif")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -199,22 +215,69 @@ def setup_mock_data():
 setup_mock_data()
 
 # Ingestion Controls at the top of the page
-st.subheader("Ingestion Controls")
+st.subheader("📤 Upload Images to Google Drive")
 with st.container(border=True):
+    # Get Drive manager
+    try:
+        drive = get_drive_manager()
+        team_folder_id = st.secrets.get('GOOGLE_DRIVE_TEAM_FOLDER_ID')
+    except Exception as e:
+        st.error(f"Failed to connect to Google Drive: {e}")
+        drive = None
+        team_folder_id = None
+
+    # Get client name for folder
+    client_name = st.text_input("Client/Agency Name", value="Untitled_Site_Survey")
+
     uploaded_files = st.file_uploader(
         "Upload raw survey photos (.jpg, .jpeg, .png)",
         accept_multiple_files=True,
         type=["jpg", "jpeg", "png", "heic"],
     )
+
     uploaded_file_paths = []
-    if uploaded_files:
-        os.makedirs(source_dir, exist_ok=True)
-        for uploaded_file in uploaded_files:
-            file_path = os.path.join(source_dir, uploaded_file.name)
-            with open(file_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            uploaded_file_paths.append(file_path)
-        st.success(f"Saved {len(uploaded_files)} files to directory!")
+    if uploaded_files and st.button("📤 Upload to Google Drive", use_container_width=True):
+        if not drive or not team_folder_id:
+            st.error("Google Drive not configured. Please check Streamlit secrets.")
+            st.stop()
+
+        with st.spinner("Creating folder structure and uploading images..."):
+            try:
+                # Create client folder with timestamp
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                client_folder_name = f"{client_name}_{timestamp}"
+                client_folder_id = drive.get_or_create_folder(team_folder_id, client_folder_name)
+
+                # Create subfolders
+                raw_images_folder_id = drive.get_or_create_folder(client_folder_id, "01_Raw_Images")
+                processed_folder_id = drive.get_or_create_folder(client_folder_id, "02_Processed_Sites")
+                reports_folder_id = drive.get_or_create_folder(client_folder_id, "03_Reports")
+                metadata_folder_id = drive.get_or_create_folder(client_folder_id, "04_Metadata")
+
+                # Upload images to Drive
+                progress_bar = st.progress(0)
+                for idx, uploaded_file in enumerate(uploaded_files):
+                    # Save temporarily to process
+                    temp_path = f"/tmp/{uploaded_file.name}"
+                    with open(temp_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+
+                    # Upload to Drive
+                    drive.upload_file(temp_path, raw_images_folder_id)
+                    uploaded_file_paths.append(temp_path)
+                    progress_bar.progress((idx + 1) / len(uploaded_files))
+
+                st.success(f"✅ Uploaded {len(uploaded_files)} images to Google Drive!")
+                st.session_state.client_folder_id = client_folder_id
+                st.session_state.raw_images_folder_id = raw_images_folder_id
+                st.session_state.processed_folder_id = processed_folder_id
+                st.session_state.reports_folder_id = reports_folder_id
+                st.session_state.metadata_folder_id = metadata_folder_id
+                st.session_state.client_name = client_name
+                st.session_state.image_paths = uploaded_file_paths
+
+            except Exception as e:
+                st.error(f"Failed to upload to Google Drive: {e}")
 
     if st.button("🚀 Ingest & Process Sites", use_container_width=True):
         if not uploaded_files:
