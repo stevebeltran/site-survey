@@ -384,10 +384,13 @@ def add_styled_table(doc, data, headers):
         
     doc.add_paragraph()
 
-def generate_word_report(site_data_list, output_filepath, customer_info=None):
+def generate_word_report(site_data_list, output_filepath, customer_info=None, drive_manager=None, drive_reports_folder_id=None):
     """
     Generate the Site Survey Word Document.
     site_data_list items contain pre-populated 'agency_name' field from processor.
+
+    If drive_manager and drive_reports_folder_id are provided, the report
+    will also be uploaded to Google Drive.
     """
     doc = Document()
 
@@ -525,4 +528,17 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None):
         doc.add_page_break()
         
     doc.save(output_filepath)
+
+    # If using Google Drive, upload report
+    if drive_manager and drive_reports_folder_id:
+        try:
+            report_filename = os.path.basename(output_filepath)
+            drive_manager.upload_file(
+                output_filepath,
+                drive_reports_folder_id,
+                file_name=report_filename
+            )
+        except Exception as e:
+            print(f"Failed to upload report to Google Drive: {e}")
+
     return output_filepath
