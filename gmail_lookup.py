@@ -211,8 +211,9 @@ def _extract_body_contacts(gmail, msg_id):
     sig_title = None
     sig_name = None
     sig_email = None
+    title_line_idx = None
 
-    for line in sig_lines:
+    for idx, line in enumerate(sig_lines):
         stripped = line.strip()
         if not stripped:
             continue
@@ -220,26 +221,29 @@ def _extract_body_contacts(gmail, msg_id):
             tm = _TITLE_KEYWORDS.search(stripped)
             if tm:
                 sig_title = stripped
+                title_line_idx = idx
         if sig_email is None:
             em = _email_re.search(stripped)
             if em:
                 sig_email = em.group(0)
 
-    # Name: first non-empty line that isn't title/email/phone/url
-    for line in sig_lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if _TITLE_KEYWORDS.search(stripped):
-            continue
-        if '@' in stripped or 'http' in stripped.lower():
-            continue
-        if _phone_re.search(stripped):
-            continue
-        if len(stripped) > 60:
-            continue
-        sig_name = stripped
-        break
+    # Name: look backwards from the title line.  In typical signatures
+    # the name sits directly above the title ("John Emery\nIT Manager").
+    if title_line_idx is not None:
+        for idx in range(title_line_idx - 1, max(title_line_idx - 4, -1), -1):
+            stripped = sig_lines[idx].strip()
+            if not stripped:
+                continue
+            if _TITLE_KEYWORDS.search(stripped):
+                continue
+            if '@' in stripped or 'http' in stripped.lower():
+                continue
+            if _phone_re.search(stripped):
+                continue
+            if len(stripped) > 60:
+                continue
+            sig_name = stripped
+            break
 
     if sig_name or sig_title:
         # Only add if we didn't already find this email in the roster
@@ -329,27 +333,43 @@ def search_gmail_for_contacts(agency_name, city=None):
                     # and signature blocks (name, title, email, phone)
                     body_contacts = _extract_body_contacts(gmail, msg_stub["id"])
 
-                    # Merge body info into header contacts by email
+                    # Merge body info into header contacts by email,
+                    # falling back to name matching for signature blocks
+                    # that have a title but no email address.
                     for bc in body_contacts:
                         bc_email = bc.get("email", "").lower()
-                        if not bc_email:
-                            continue
-                        matched = False
-                        for hc in header_contacts:
-                            if hc["email"].lower() == bc_email:
-                                if bc.get("name") and not hc["name"]:
-                                    hc["name"] = bc["name"]
-                                if bc.get("title") and not hc["title"]:
-                                    hc["title"] = bc["title"]
-                                matched = True
-                                break
-                        # Body contact not in headers — add it directly
-                        if not matched and not _is_blocked_email(bc_email):
-                            header_contacts.append({
-                                "name": bc.get("name", ""),
-                                "email": bc["email"],
-                                "title": bc.get("title", ""),
-                            })
+                        bc_name = bc.get("name", "").strip()
+                        bc_title = bc.get("title", "")
+                        if bc_email:
+                            matched = False
+                            for hc in header_contacts:
+                                if hc["email"].lower() == bc_email:
+                                    if bc_name and not hc["name"]:
+                                        hc["name"] = bc_name
+                                    if bc_title and not hc.get("title"):
+                                        hc["title"] = bc_title
+                                    matched = True
+                                    break
+                            # Body contact not in headers — add it directly
+                            if not matched and not _is_blocked_email(bc_email):
+                                header_contacts.append({
+                                    "name": bc_name,
+                                    "email": bc["email"],
+                                    "title": bc_title,
+                                })
+                        elif bc_name and bc_title:
+                            # No email in signature — match by name
+                            bc_lower = bc_name.lower()
+                            for hc in header_contacts:
+                                hc_name = hc.get("name", "").lower()
+                                if hc_name and (
+                                    bc_lower == hc_name
+                                    or bc_lower in hc_name
+                                    or hc_name in bc_lower
+                                ):
+                                    if not hc.get("title"):
+                                        hc["title"] = bc_title
+                                    break
 
                     all_contacts.extend(header_contacts)
             except Exception as e:
