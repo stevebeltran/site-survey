@@ -725,7 +725,7 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
         # Site Details
         details_data = [
             ("Site Name", site_name),
-            ("Site Address", site['address']),
+            ("Site Address", _format_short_address(site['address'])),
             ("Height of building", "2-story (Assessment required)"),
             ("Access to roof", analysis.get('roof_access', 'Unknown')),
             ("Roof type", analysis.get('roof_type', 'Unknown'))

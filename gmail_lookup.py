@@ -108,7 +108,7 @@ _TITLE_KEYWORDS = re.compile(
     r'Director|Manager|Coordinator|Administrator|Superintendent|'
     r'IT\s+Director|CIO|CTO|CISO|Systems?\s+Administrator|Network\s+Administrator|'
     r'Engineer|Analyst|Specialist|Technician|Supervisor|'
-    r'City\s+Manager|Town\s+Manager|Assistant\s+Chief)\b',
+    r'City\s+Manager|Town\s+Manager|Assistant\s+Chief|Chief)\b',
     re.IGNORECASE,
 )
 

@@ -1,10 +1,12 @@
 import os
 import json
+import re
 import tempfile
 import streamlit as st
 import pandas as pd
 from PIL import Image
 import datetime
+from zoneinfo import ZoneInfo
 from google_drive import get_drive_manager
 from gmail_lookup import search_gmail_for_contacts
 import google_oauth
@@ -242,7 +244,7 @@ def _logo_b64():
 _logo_data = _logo_b64()
 _logo_tag = f'<img src="data:image/png;base64,{_logo_data}" />' if _logo_data else ""
 
-_last_updated = datetime.datetime.now().strftime("%m/%d/%Y %I:%M %p")
+_last_updated = datetime.datetime.now(ZoneInfo("America/Chicago")).strftime("%m/%d/%Y %I:%M %p")
 
 st.markdown(f"""
 <div class="main-header">
@@ -320,7 +322,7 @@ with st.expander("📤 Upload Survey Photos", expanded=not _has_sites):
                         st.session_state.gps_detected_agency = detection
                         agency = detection["agency_name"]
                         st.session_state.customer_info["agency_name"] = agency
-                        st.session_state.customer_info["agency_address"] = detection.get("address", "")
+                        st.session_state.customer_info["agency_address"] = reporter._format_short_address(detection.get("address", ""))
                         contacts = _lookup_contacts_from_gmail(agency, detection.get("city", ""))
                         if contacts:
                             if contacts.get("status") == "connected":
@@ -469,7 +471,7 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
             existing = st.session_state.customer_info
             st.session_state.customer_info = {
                 "agency_name": agency_name,
-                "agency_address": first_address,
+                "agency_address": reporter._format_short_address(first_address),
                 "poc_name": existing.get("poc_name", ""),
                 "poc_email": existing.get("poc_email", ""),
                 "poc_phone": existing.get("poc_phone", ""),
@@ -674,15 +676,20 @@ with tab1:
             if "city_boundary_geojson" not in st.session_state:
                 city = st.session_state.get("gps_detected_agency", {}).get("city", "")
                 state = ""
-                # Extract state from Nominatim address
-                # Format: "..., City, County, State, ZIP, United States"
-                # State is the alpha-only part just before the zip code
+                # Extract state from address — handles both raw Nominatim
+                # ("..., State, ZIP, United States") and formatted
+                # ("street, city, State ZIP") formats.
                 addr = st.session_state.customer_info.get("agency_address", "")
                 addr_parts = [p.strip() for p in addr.split(",")]
                 for idx, part in enumerate(addr_parts):
-                    # Look for a part that's followed by a ZIP code
+                    # Raw format: part followed by a separate ZIP part
                     if idx + 1 < len(addr_parts) and addr_parts[idx + 1].strip()[:5].isdigit():
                         state = part
+                        break
+                    # Formatted: "State ZIP" merged in the last segment
+                    tokens = part.split()
+                    if len(tokens) >= 2 and re.match(r'^\d{5}(-\d{4})?$', tokens[-1]):
+                        state = " ".join(tokens[:-1])
                         break
                 geojson = reporter.query_city_boundary(city, state) if city else None
                 st.session_state.city_boundary_geojson = geojson
