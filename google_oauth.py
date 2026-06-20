@@ -23,6 +23,7 @@ ALLOWED_DOMAIN = "brincdrones.com"
 # Session state keys
 _TOKEN_KEY = "google_oauth_token"
 _EMAIL_KEY = "google_oauth_email"
+_VERIFIER_KEY = "google_oauth_code_verifier"
 
 
 def _get_client_config():
@@ -69,6 +70,8 @@ def get_auth_url():
         prompt="consent",
         hd=ALLOWED_DOMAIN,
     )
+    # Save PKCE code_verifier so handle_callback() can use it
+    st.session_state[_VERIFIER_KEY] = flow.code_verifier
     return auth_url
 
 
@@ -93,6 +96,8 @@ def handle_callback():
             scopes=SCOPES,
             redirect_uri=st.secrets["GOOGLE_OAUTH_REDIRECT_URI"],
         )
+        # Restore PKCE code_verifier from the original auth request
+        flow.code_verifier = st.session_state.pop(_VERIFIER_KEY, None)
         flow.fetch_token(code=code)
         creds = flow.credentials
 
