@@ -60,6 +60,21 @@ def _extract_external_contacts(headers, my_domain="brincdrones.com"):
     return contacts
 
 
+_NON_PERSON_PATTERNS = re.compile(
+    r'^(google\s*calendar|no[\s-]?reply|noreply|donotreply|do[\s-]?not[\s-]?reply|'
+    r'calendar-notification|mailer-daemon|postmaster|notification|automated|'
+    r'system|admin@|support@|info@|helpdesk@)$',
+    re.IGNORECASE,
+)
+
+
+def _is_non_person_name(name):
+    """Return True if the display name looks like a service/resource, not a person."""
+    if not name:
+        return False
+    return bool(_NON_PERSON_PATTERNS.search(name.strip()))
+
+
 def search_gmail_for_contacts(agency_name, city=None):
     """Search Gmail for threads mentioning the agency and extract external contacts.
 
@@ -79,6 +94,7 @@ def search_gmail_for_contacts(agency_name, city=None):
         "poc_email": "",
         "it_director": "",
         "it_email": "",
+        "all_contacts": [],  # every unique external contact found
         "status": "no_results",  # "connected", "no_results", or "auth_error"
         "error": "",
     }
@@ -146,8 +162,14 @@ def search_gmail_for_contacts(agency_name, city=None):
                     for attendee in event.get("attendees", []):
                         email = attendee.get("email", "")
                         name = attendee.get("displayName", "")
-                        if email and "brincdrones.com" not in email.lower():
-                            all_contacts.append({"name": name, "email": email})
+                        if not email or "brincdrones.com" in email.lower():
+                            continue
+                        # Skip resource calendars and non-person entries
+                        if attendee.get("resource"):
+                            continue
+                        if _is_non_person_name(name):
+                            continue
+                        all_contacts.append({"name": name, "email": email})
     except Exception as e:
         print(f"Calendar search error: {e}")
 
@@ -169,6 +191,7 @@ def search_gmail_for_contacts(agency_name, city=None):
             seen[email_lower] = c
 
     unique_contacts = list(seen.values())
+    result["all_contacts"] = unique_contacts
 
     # Heuristic assignment:
     # - First external contact found = POC (most likely the person on the kickoff)

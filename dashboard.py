@@ -322,6 +322,9 @@ with col_upload:
                             for key in ("poc_name", "poc_email", "it_director", "it_email"):
                                 if contacts.get(key):
                                     st.session_state.customer_info[key] = contacts[key]
+                            found = contacts.get("all_contacts", [])
+                            if found:
+                                st.session_state["gmail_found_contacts"] = found
                         elif contacts.get("status") == "auth_error":
                             st.session_state["gmail_auth_error"] = contacts.get("error", "")
                     st.rerun()
@@ -487,15 +490,13 @@ tab1, tab2, tab3 = st.tabs(["📋 Survey Pipeline", "🔗 Workflow Sync", "📈 
 with tab1:
     # 0. Customer Info Panel at the top
     st.subheader("Customer & Agency Information")
-    col_c1, col_c2, col_c3 = st.columns(3)
+    col_c1, col_c2 = st.columns([2, 1])
     with col_c1:
         st.session_state.customer_info["agency_name"] = st.text_input("Agency Name", value=st.session_state.customer_info["agency_name"])
         st.session_state.customer_info["agency_address"] = st.text_input("Agency Address", value=st.session_state.customer_info["agency_address"])
     with col_c2:
-        st.session_state.customer_info["poc_name"] = st.text_input("POC Name", value=st.session_state.customer_info["poc_name"])
-        st.session_state.customer_info["poc_email"] = st.text_input("POC Email", value=st.session_state.customer_info["poc_email"])
-    with col_c3:
-        st.session_state.customer_info["it_director"] = st.text_input("IT Contact", value=st.session_state.customer_info["it_director"])
+        st.markdown("")  # spacer to align button with inputs
+        st.markdown("")
         if google_oauth.is_authenticated():
             if st.button("🔌 Pull Contacts from Gmail", use_container_width=True):
                 agency = st.session_state.customer_info.get("agency_name", "")
@@ -509,17 +510,109 @@ with tab1:
                         err = contacts.get("error", "")
                         st.error(f"Gmail authentication error: {err}")
                         st.session_state.integration_logs.append(f"[Gmail API] Auth error: {err}")
-                    elif status == "connected" and any(contacts.get(k) for k in ("poc_name", "poc_email", "it_director", "it_email")):
+                    elif status == "connected":
+                        # Store all found contacts for the table
+                        found = contacts.get("all_contacts", [])
+                        if found:
+                            st.session_state["gmail_found_contacts"] = found
+                        # Auto-assign best guesses
                         for key in ("poc_name", "poc_email", "it_director", "it_email"):
                             if contacts.get(key):
                                 st.session_state.customer_info[key] = contacts[key]
-                        st.session_state.integration_logs.append(f"[Gmail API] Found contacts for {agency}")
+                        st.session_state.integration_logs.append(f"[Gmail API] Found {len(found)} contacts for {agency}")
                         st.rerun()
                     else:
                         st.info(f"Connected to Gmail but no matching threads or calendar invites found for \"{agency}\".")
                         st.session_state.integration_logs.append(f"[Gmail API] Connected — no contacts found for {agency}")
         else:
             google_oauth.render_connect_button("Connect Google for Gmail Lookup")
+
+    # --- POC / Contacts Table ---
+    st.markdown("**Points of Contact**")
+    # Initialize editable contacts from session state
+    if "poc_rows" not in st.session_state:
+        st.session_state.poc_rows = []
+        # Seed from existing customer_info if present
+        if st.session_state.customer_info.get("poc_name") or st.session_state.customer_info.get("poc_email"):
+            st.session_state.poc_rows.append({
+                "role": "POC",
+                "name": st.session_state.customer_info.get("poc_name", ""),
+                "email": st.session_state.customer_info.get("poc_email", ""),
+            })
+        if st.session_state.customer_info.get("it_director") or st.session_state.customer_info.get("it_email"):
+            st.session_state.poc_rows.append({
+                "role": "IT",
+                "name": st.session_state.customer_info.get("it_director", ""),
+                "email": st.session_state.customer_info.get("it_email", ""),
+            })
+
+    # Merge in any new contacts pulled from Gmail (avoid duplicates)
+    gmail_contacts = st.session_state.pop("gmail_found_contacts", None)
+    if gmail_contacts:
+        existing_emails = {r["email"].lower() for r in st.session_state.poc_rows if r.get("email")}
+        for c in gmail_contacts:
+            if c["email"].lower() not in existing_emails:
+                st.session_state.poc_rows.append({
+                    "role": "",
+                    "name": c.get("name", ""),
+                    "email": c["email"],
+                })
+                existing_emails.add(c["email"].lower())
+
+    # Render editable rows
+    role_options = ["", "POC", "IT", "Facilities", "Other"]
+    rows_to_remove = []
+    if st.session_state.poc_rows:
+        hc1, hc2, hc3, hc4 = st.columns([1, 2, 3, 0.5])
+        hc1.caption("Role")
+        hc2.caption("Name")
+        hc3.caption("Email")
+        hc4.caption("")
+    for i, row in enumerate(st.session_state.poc_rows):
+        rc1, rc2, rc3, rc4 = st.columns([1, 2, 3, 0.5])
+        with rc1:
+            st.session_state.poc_rows[i]["role"] = st.selectbox(
+                "Role", role_options, index=role_options.index(row["role"]) if row["role"] in role_options else 0,
+                key=f"poc_role_{i}", label_visibility="collapsed",
+            )
+        with rc2:
+            st.session_state.poc_rows[i]["name"] = st.text_input(
+                "Name", value=row["name"], key=f"poc_name_{i}", label_visibility="collapsed",
+                placeholder="Name",
+            )
+        with rc3:
+            st.session_state.poc_rows[i]["email"] = st.text_input(
+                "Email", value=row["email"], key=f"poc_email_{i}", label_visibility="collapsed",
+                placeholder="Email",
+            )
+        with rc4:
+            if st.button("✕", key=f"poc_del_{i}"):
+                rows_to_remove.append(i)
+
+    # Process removals
+    if rows_to_remove:
+        st.session_state.poc_rows = [r for idx, r in enumerate(st.session_state.poc_rows) if idx not in rows_to_remove]
+        st.rerun()
+
+    if st.button("＋ Add Contact", key="add_poc_row"):
+        st.session_state.poc_rows.append({"role": "", "name": "", "email": ""})
+        st.rerun()
+
+    # Sync the POC table back to customer_info for report generation
+    # Clear first so removed/changed rows take effect
+    for k in ("poc_name", "poc_email", "it_director", "it_email", "facilities_engineer", "facilities_email"):
+        st.session_state.customer_info[k] = ""
+    for row in st.session_state.poc_rows:
+        role = row.get("role", "")
+        if role == "POC" and not st.session_state.customer_info["poc_name"]:
+            st.session_state.customer_info["poc_name"] = row["name"]
+            st.session_state.customer_info["poc_email"] = row["email"]
+        elif role == "IT" and not st.session_state.customer_info["it_director"]:
+            st.session_state.customer_info["it_director"] = row["name"]
+            st.session_state.customer_info["it_email"] = row["email"]
+        elif role == "Facilities" and not st.session_state.customer_info["facilities_engineer"]:
+            st.session_state.customer_info["facilities_engineer"] = row["name"]
+            st.session_state.customer_info["facilities_email"] = row["email"]
 
     st.divider()
 
