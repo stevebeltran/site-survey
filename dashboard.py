@@ -324,7 +324,7 @@ with st.expander("📤 Upload Survey Photos", expanded=not _has_sites):
                         contacts = _lookup_contacts_from_gmail(agency, detection.get("city", ""))
                         if contacts:
                             if contacts.get("status") == "connected":
-                                for key in ("poc_name", "poc_email", "it_director", "it_email"):
+                                for key in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email"):
                                     if contacts.get(key):
                                         st.session_state.customer_info[key] = contacts[key]
                                 found = contacts.get("all_contacts", [])
@@ -519,7 +519,7 @@ with tab1:
                         if found:
                             st.session_state["gmail_found_contacts"] = found
                         # Auto-assign best guesses
-                        for key in ("poc_name", "poc_email", "it_director", "it_email"):
+                        for key in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email"):
                             if contacts.get(key):
                                 st.session_state.customer_info[key] = contacts[key]
                         st.session_state.integration_logs.append(f"[Gmail API] Found {len(found)} contacts for {agency}")
@@ -542,6 +542,7 @@ with tab1:
                 "name": st.session_state.customer_info.get("poc_name", ""),
                 "email": st.session_state.customer_info.get("poc_email", ""),
                 "title": "",
+                "phone": st.session_state.customer_info.get("poc_phone", ""),
             })
         if st.session_state.customer_info.get("it_director") or st.session_state.customer_info.get("it_email"):
             st.session_state.poc_rows.append({
@@ -549,6 +550,7 @@ with tab1:
                 "name": st.session_state.customer_info.get("it_director", ""),
                 "email": st.session_state.customer_info.get("it_email", ""),
                 "title": "",
+                "phone": "",
             })
 
     # Merge in any new contacts pulled from Gmail (avoid duplicates)
@@ -556,27 +558,39 @@ with tab1:
     if gmail_contacts:
         existing_emails = {r["email"].lower() for r in st.session_state.poc_rows if r.get("email")}
         for c in gmail_contacts:
-            if c["email"].lower() not in existing_emails:
+            c_email_lower = c["email"].lower()
+            if c_email_lower not in existing_emails:
                 st.session_state.poc_rows.append({
                     "role": "",
                     "name": c.get("name", ""),
                     "email": c["email"],
                     "title": c.get("title", ""),
+                    "phone": c.get("phone", ""),
                 })
-                existing_emails.add(c["email"].lower())
+                existing_emails.add(c_email_lower)
+            else:
+                # Update existing row with newly found title/phone if missing
+                for row in st.session_state.poc_rows:
+                    if row.get("email", "").lower() == c_email_lower:
+                        if c.get("title") and not row.get("title"):
+                            row["title"] = c["title"]
+                        if c.get("phone") and not row.get("phone"):
+                            row["phone"] = c["phone"]
+                        break
 
     # Render editable rows
     role_options = ["", "POC", "IT", "Facilities", "Other"]
     rows_to_remove = []
     if st.session_state.poc_rows:
-        hc1, hc2, hc3, hc4, hc5 = st.columns([1, 2, 2, 2, 0.5])
+        hc1, hc2, hc3, hc4, hc5, hc6 = st.columns([1, 1.8, 1.8, 1.8, 1.5, 0.5])
         hc1.caption("Role")
         hc2.caption("Name")
         hc3.caption("Title / Rank")
         hc4.caption("Email")
-        hc5.caption("")
+        hc5.caption("Phone")
+        hc6.caption("")
     for i, row in enumerate(st.session_state.poc_rows):
-        rc1, rc2, rc3, rc4, rc5 = st.columns([1, 2, 2, 2, 0.5])
+        rc1, rc2, rc3, rc4, rc5, rc6 = st.columns([1, 1.8, 1.8, 1.8, 1.5, 0.5])
         with rc1:
             st.session_state.poc_rows[i]["role"] = st.selectbox(
                 "Role", role_options, index=role_options.index(row["role"]) if row["role"] in role_options else 0,
@@ -598,6 +612,11 @@ with tab1:
                 placeholder="Email",
             )
         with rc5:
+            st.session_state.poc_rows[i]["phone"] = st.text_input(
+                "Phone", value=row.get("phone", ""), key=f"poc_phone_{i}", label_visibility="collapsed",
+                placeholder="Phone",
+            )
+        with rc6:
             if st.button("✕", key=f"poc_del_{i}"):
                 rows_to_remove.append(i)
 
@@ -607,18 +626,19 @@ with tab1:
         st.rerun()
 
     if st.button("＋ Add Contact", key="add_poc_row"):
-        st.session_state.poc_rows.append({"role": "", "name": "", "email": "", "title": ""})
+        st.session_state.poc_rows.append({"role": "", "name": "", "email": "", "title": "", "phone": ""})
         st.rerun()
 
     # Sync the POC table back to customer_info for report generation
     # Clear first so removed/changed rows take effect
-    for k in ("poc_name", "poc_email", "it_director", "it_email", "facilities_engineer", "facilities_email"):
+    for k in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email", "facilities_engineer", "facilities_email"):
         st.session_state.customer_info[k] = ""
     for row in st.session_state.poc_rows:
         role = row.get("role", "")
         if role == "POC" and not st.session_state.customer_info["poc_name"]:
             st.session_state.customer_info["poc_name"] = row["name"]
             st.session_state.customer_info["poc_email"] = row["email"]
+            st.session_state.customer_info["poc_phone"] = row.get("phone", "")
         elif role == "IT" and not st.session_state.customer_info["it_director"]:
             st.session_state.customer_info["it_director"] = row["name"]
             st.session_state.customer_info["it_email"] = row["email"]
