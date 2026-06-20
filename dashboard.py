@@ -240,12 +240,17 @@ def _logo_b64():
 _logo_data = _logo_b64()
 _logo_tag = f'<img src="data:image/png;base64,{_logo_data}" />' if _logo_data else ""
 
+_last_updated = datetime.datetime.now().strftime("%m/%d/%Y %I:%M %p")
+
 st.markdown(f"""
 <div class="main-header">
     {_logo_tag}
     <div class="header-text">
         <h1>Drone as a First Responder (DFR)</h1>
         <p>Site Survey & Deployment Automation Suite</p>
+    </div>
+    <div style="margin-left:auto; text-align:right; font-size:0.75rem; opacity:0.7;">
+        Last updated<br>{_last_updated}
     </div>
 </div>
 """, unsafe_allow_html=True)
