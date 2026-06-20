@@ -115,7 +115,7 @@ def get_auth_url():
         "response_type": "code",
         "scope": " ".join(SCOPES),
         "access_type": "offline",
-        "prompt": "select_account",
+        "prompt": "consent",
         "include_granted_scopes": "true",
         "hd": ALLOWED_DOMAIN,
     }
