@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import subprocess
 import tempfile
 import streamlit as st
 import pandas as pd
@@ -244,7 +245,21 @@ def _logo_b64():
 _logo_data = _logo_b64()
 _logo_tag = f'<img src="data:image/png;base64,{_logo_data}" />' if _logo_data else ""
 
-_last_updated = datetime.datetime.now(ZoneInfo("America/Chicago")).strftime("%m/%d/%Y %I:%M %p")
+def _get_last_push_timestamp():
+    """Get the last commit timestamp on main, formatted in CST."""
+    try:
+        ts = subprocess.check_output(
+            ["git", "log", "-1", "--format=%ci", "main"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        # Parse the git timestamp (e.g. "2026-06-19 14:32:01 -0500")
+        dt = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S %z")
+        return dt.astimezone(ZoneInfo("America/Chicago")).strftime("%m/%d/%Y %I:%M %p CST")
+    except Exception:
+        return "N/A"
+
+_last_updated = _get_last_push_timestamp()
 
 st.markdown(f"""
 <div class="main-header">

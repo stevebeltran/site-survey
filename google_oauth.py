@@ -253,25 +253,17 @@ def get_user_email():
 
 
 def render_connect_button(label="Connect Google Account"):
-    """Render an inline link button to start the OAuth flow.
+    """Render a link button to start the OAuth flow.
 
-    Uses an HTML anchor with target='_top' so the OAuth redirect
-    navigates the top-level window instead of opening a new tab.
+    Uses st.link_button so the redirect works reliably inside
+    columns, tabs, and other Streamlit container contexts.
 
     Args:
         label: Button text to display.
     """
     try:
         auth_url = get_auth_url()
-        st.markdown(
-            f'<a href="{auth_url}" target="_top" style="'
-            "display:inline-block;width:100%;padding:0.5rem 1rem;"
-            "background-color:#FF4B4B;color:white;text-align:center;"
-            "text-decoration:none;border-radius:0.5rem;font-weight:600;"
-            "font-size:0.875rem;line-height:1.6;"
-            f'">🔗 {label}</a>',
-            unsafe_allow_html=True,
-        )
+        st.link_button(f"🔗 {label}", auth_url, use_container_width=True)
     except Exception:
         st.warning("Google OAuth not configured. Add GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and GOOGLE_OAUTH_REDIRECT_URI to Streamlit secrets.")
 
