@@ -5,6 +5,8 @@ callback via st.query_params, exchanging the code for tokens, validating
 the user's domain, and storing/refreshing credentials in st.session_state.
 """
 
+from urllib.parse import urlencode
+
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -23,7 +25,6 @@ ALLOWED_DOMAIN = "brincdrones.com"
 # Session state keys
 _TOKEN_KEY = "google_oauth_token"
 _EMAIL_KEY = "google_oauth_email"
-_VERIFIER_KEY = "google_oauth_code_verifier"
 
 
 def _get_client_config():
@@ -56,23 +57,25 @@ def _validate_domain(email):
 def get_auth_url():
     """Build the Google OAuth consent URL.
 
+    Constructs the URL directly without PKCE (code_challenge), since
+    st.session_state is lost during the full-page redirect to Google
+    and back. PKCE is not required for confidential clients (web apps
+    with a client_secret).
+
     Returns:
         Authorization URL string that the user should be redirected to.
     """
-    flow = Flow.from_client_config(
-        _get_client_config(),
-        scopes=SCOPES,
-        redirect_uri=st.secrets["GOOGLE_OAUTH_REDIRECT_URI"],
-    )
-    auth_url, _ = flow.authorization_url(
-        access_type="offline",
-        include_granted_scopes="true",
-        prompt="consent",
-        hd=ALLOWED_DOMAIN,
-    )
-    # Save PKCE code_verifier so handle_callback() can use it
-    st.session_state[_VERIFIER_KEY] = flow.code_verifier
-    return auth_url
+    params = {
+        "client_id": st.secrets["GOOGLE_OAUTH_CLIENT_ID"],
+        "redirect_uri": st.secrets["GOOGLE_OAUTH_REDIRECT_URI"],
+        "response_type": "code",
+        "scope": " ".join(SCOPES),
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "true",
+        "hd": ALLOWED_DOMAIN,
+    }
+    return f"https://accounts.google.com/o/oauth2/auth?{urlencode(params)}"
 
 
 def handle_callback():
@@ -96,8 +99,8 @@ def handle_callback():
             scopes=SCOPES,
             redirect_uri=st.secrets["GOOGLE_OAUTH_REDIRECT_URI"],
         )
-        # Restore PKCE code_verifier from the original auth request
-        flow.code_verifier = st.session_state.pop(_VERIFIER_KEY, None)
+        # No PKCE — auth URL was built without code_challenge
+        flow.code_verifier = None
         flow.fetch_token(code=code)
         creds = flow.credentials
 
