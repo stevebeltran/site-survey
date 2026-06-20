@@ -5,6 +5,8 @@ callback via st.query_params, exchanging the code for tokens, validating
 the user's domain, and storing/refreshing credentials in st.session_state.
 """
 
+import json
+import os
 from urllib.parse import urlencode
 
 from google_auth_oauthlib.flow import Flow
@@ -25,6 +27,48 @@ ALLOWED_DOMAIN = "brincdrones.com"
 # Session state keys
 _TOKEN_KEY = "google_oauth_token"
 _EMAIL_KEY = "google_oauth_email"
+
+# Persistent token file (survives page reloads / app restarts)
+_TOKEN_FILE = os.path.join(os.path.dirname(__file__), ".streamlit", "oauth_token.json")
+
+
+def _save_token_to_disk(token_data, email):
+    """Persist token data and email to disk as JSON."""
+    try:
+        os.makedirs(os.path.dirname(_TOKEN_FILE), exist_ok=True)
+        payload = dict(token_data)
+        payload["email"] = email
+        with open(_TOKEN_FILE, "w") as f:
+            json.dump(payload, f)
+    except Exception:
+        pass  # Disk write failure is non-fatal
+
+
+def _load_token_from_disk():
+    """Load token data from disk into session state if session state is empty."""
+    if st.session_state.get(_TOKEN_KEY):
+        return  # Already populated
+    try:
+        with open(_TOKEN_FILE, "r") as f:
+            payload = json.load(f)
+        email = payload.pop("email", None)
+        st.session_state[_TOKEN_KEY] = payload
+        if email:
+            st.session_state[_EMAIL_KEY] = email
+    except Exception:
+        pass  # File missing or corrupt — nothing to restore
+
+
+def _delete_token_file():
+    """Remove the persisted token file from disk."""
+    try:
+        os.remove(_TOKEN_FILE)
+    except Exception:
+        pass  # File already gone or inaccessible
+
+
+# On module load, attempt to restore tokens from disk
+_load_token_from_disk()
 
 
 def _get_client_config():
@@ -71,7 +115,7 @@ def get_auth_url():
         "response_type": "code",
         "scope": " ".join(SCOPES),
         "access_type": "offline",
-        "prompt": "consent",
+        "prompt": "select_account",
         "include_granted_scopes": "true",
         "hd": ALLOWED_DOMAIN,
     }
@@ -120,7 +164,7 @@ def handle_callback():
             return
 
         # Store credentials and email in session state
-        st.session_state[_TOKEN_KEY] = {
+        token_data = {
             "token": creds.token,
             "refresh_token": creds.refresh_token,
             "token_uri": creds.token_uri,
@@ -128,7 +172,9 @@ def handle_callback():
             "client_secret": creds.client_secret,
             "scopes": list(creds.scopes),
         }
+        st.session_state[_TOKEN_KEY] = token_data
         st.session_state[_EMAIL_KEY] = user_email
+        _save_token_to_disk(token_data, user_email)
 
         st.query_params.clear()
         st.rerun()
@@ -168,16 +214,20 @@ def get_credentials():
             creds.refresh(Request())
             # Update stored token with refreshed values
             st.session_state[_TOKEN_KEY]["token"] = creds.token
+            _save_token_to_disk(st.session_state[_TOKEN_KEY],
+                                st.session_state.get(_EMAIL_KEY, ""))
             return creds
         except Exception:
             # Refresh failed — clear everything
             st.session_state.pop(_TOKEN_KEY, None)
             st.session_state.pop(_EMAIL_KEY, None)
+            _delete_token_file()
             return None
 
     # No refresh token and token invalid — clear
     st.session_state.pop(_TOKEN_KEY, None)
     st.session_state.pop(_EMAIL_KEY, None)
+    _delete_token_file()
     return None
 
 

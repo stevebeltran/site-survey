@@ -281,23 +281,24 @@ with st.sidebar:
         if st.button("Sign Out", use_container_width=True):
             st.session_state.pop("google_oauth_token", None)
             st.session_state.pop("google_oauth_email", None)
+            google_oauth._delete_token_file()
             st.rerun()
     else:
         google_oauth.render_connect_button()
 
-# Ingestion Controls – compact layout with action buttons on the right
+# Ingestion Controls
 # Get Drive manager once up front (returns None if not authenticated)
 drive = get_drive_manager()
 team_folder_id = st.secrets.get('GOOGLE_DRIVE_TEAM_FOLDER_ID', None)
 
 def _on_files_changed():
-    """Reset GPS detection when the user changes the uploaded files."""
+    """Reset GPS detection and processing flag when the user changes files."""
     st.session_state.pop("gps_detected_agency", None)
+    st.session_state.pop("_auto_processed", None)
 
-col_upload, col_actions = st.columns([3, 1], gap="medium")
-
-with col_upload:
-    st.markdown("**📤 Upload Images to Google Drive**")
+# Collapse the uploader once sites have been processed
+_has_sites = bool(st.session_state.get("processed_sites"))
+with st.expander("📤 Upload Survey Photos", expanded=not _has_sites):
     uploaded_files = st.file_uploader(
         "Upload raw survey photos (.jpg, .jpeg, .png)",
         accept_multiple_files=True,
@@ -306,55 +307,58 @@ with col_upload:
         label_visibility="collapsed",
     )
 
-    # Auto-detect agency from GPS in uploaded photos
-    if uploaded_files and "gps_detected_agency" not in st.session_state:
-        with st.spinner("Detecting location from photo GPS data..."):
-            for uf in uploaded_files:
-                detection = _detect_agency_from_gps(uf.getvalue(), uf.name)
-                if detection and detection.get("agency_name"):
-                    st.session_state.gps_detected_agency = detection
-                    agency = detection["agency_name"]
-                    st.session_state.customer_info["agency_name"] = agency
-                    st.session_state.customer_info["agency_address"] = detection.get("address", "")
-                    contacts = _lookup_contacts_from_gmail(agency, detection.get("city", ""))
-                    if contacts:
-                        if contacts.get("status") == "connected":
-                            for key in ("poc_name", "poc_email", "it_director", "it_email"):
-                                if contacts.get(key):
-                                    st.session_state.customer_info[key] = contacts[key]
-                            found = contacts.get("all_contacts", [])
-                            if found:
-                                st.session_state["gmail_found_contacts"] = found
-                        elif contacts.get("status") == "auth_error":
-                            st.session_state["gmail_auth_error"] = contacts.get("error", "")
-                    st.rerun()
-                    break
+    if uploaded_files:
+        # Auto-detect agency from GPS
+        if "gps_detected_agency" not in st.session_state:
+            with st.spinner("Detecting location from photo GPS data..."):
+                for uf in uploaded_files:
+                    detection = _detect_agency_from_gps(uf.getvalue(), uf.name)
+                    if detection and detection.get("agency_name"):
+                        st.session_state.gps_detected_agency = detection
+                        agency = detection["agency_name"]
+                        st.session_state.customer_info["agency_name"] = agency
+                        st.session_state.customer_info["agency_address"] = detection.get("address", "")
+                        contacts = _lookup_contacts_from_gmail(agency, detection.get("city", ""))
+                        if contacts:
+                            if contacts.get("status") == "connected":
+                                for key in ("poc_name", "poc_email", "it_director", "it_email"):
+                                    if contacts.get(key):
+                                        st.session_state.customer_info[key] = contacts[key]
+                                found = contacts.get("all_contacts", [])
+                                if found:
+                                    st.session_state["gmail_found_contacts"] = found
+                            elif contacts.get("status") == "auth_error":
+                                st.session_state["gmail_auth_error"] = contacts.get("error", "")
+                        break
+                else:
+                    st.session_state.gps_detected_agency = {}
+
+        suggested_name = st.session_state.get("gps_detected_agency", {}).get("agency_name", "")
+        client_name = st.text_input(
+            "Client/Agency Name",
+            value=suggested_name or "Untitled_Site_Survey",
+        )
+        if suggested_name:
+            st.caption(f"Auto-detected from GPS: {st.session_state['gps_detected_agency'].get('address', '')}")
+        if st.session_state.pop("gmail_auth_error", None):
+            if google_oauth.is_authenticated():
+                st.warning("Could not search Gmail for contacts. Use the 'Pull Contacts from Gmail' button below to retry.")
             else:
-                st.session_state.gps_detected_agency = {}
+                st.warning("Connect your Google account to search Gmail for contacts.")
 
-    suggested_name = st.session_state.get("gps_detected_agency", {}).get("agency_name", "")
-    client_name = st.text_input(
-        "Client/Agency Name",
-        value=suggested_name or "Untitled_Site_Survey",
-    )
-    if suggested_name:
-        st.caption(f"Auto-detected from GPS: {st.session_state['gps_detected_agency'].get('address', '')}")
-    if st.session_state.pop("gmail_auth_error", None):
-        if google_oauth.is_authenticated():
-            st.warning("Could not search Gmail for contacts. Use the 'Pull Contacts from Gmail' button below to retry.")
-        else:
-            st.warning("Connect your Google account to search Gmail for contacts.")
-
-with col_actions:
-    st.markdown("&nbsp;", unsafe_allow_html=True)  # spacer to align with uploader
-    if google_oauth.is_authenticated():
-        upload_clicked = st.button("📤 Upload to Drive", use_container_width=True, disabled=not uploaded_files)
+        # Upload to Drive button (remains manual)
+        col_drive_btn, col_spacer = st.columns([1, 2])
+        with col_drive_btn:
+            if google_oauth.is_authenticated():
+                upload_clicked = st.button("📤 Upload to Drive", use_container_width=True)
+            else:
+                upload_clicked = False
+                google_oauth.render_connect_button("Connect Google to Upload")
     else:
+        client_name = "Untitled_Site_Survey"
         upload_clicked = False
-        google_oauth.render_connect_button("Connect Google to Upload")
-    ingest_clicked = st.button("🚀 Ingest & Process", use_container_width=True, disabled=not uploaded_files)
 
-# Handle Upload button
+# Handle Upload to Drive button
 uploaded_file_paths = []
 if upload_clicked and uploaded_files:
     if not drive:
@@ -385,7 +389,7 @@ if upload_clicked and uploaded_files:
                 uploaded_file_paths.append(temp_path)
                 progress_bar.progress((idx + 1) / len(uploaded_files))
 
-            st.success(f"✅ Uploaded {len(uploaded_files)} images to Google Drive!")
+            st.success(f"Uploaded {len(uploaded_files)} images to Google Drive!")
             st.session_state.client_folder_id = client_folder_id
             st.session_state.raw_images_folder_id = raw_images_folder_id
             st.session_state.processed_folder_id = processed_folder_id
@@ -397,11 +401,9 @@ if upload_clicked and uploaded_files:
         except Exception as e:
             st.error(f"Failed to upload to Google Drive: {e}")
 
-# Handle Ingest button
-if ingest_clicked:
-    if not uploaded_files:
-        st.error("Please upload survey photos before processing.")
-        st.stop()
+# Auto-process on upload — runs once per file set, no manual button needed
+if uploaded_files and not st.session_state.get("_auto_processed"):
+    st.session_state._auto_processed = True
 
     progress_bar = st.progress(0)
     progress_text = st.empty()
@@ -426,11 +428,11 @@ if ingest_clicked:
         st.session_state.image_paths = image_paths_for_processing
 
         # Get Drive manager for processing pipeline
-        drive = None
+        proc_drive = None
         try:
-            drive = get_drive_manager()
-        except Exception as e:
-            st.warning(f"Google Drive not available for this session: {e}")
+            proc_drive = get_drive_manager()
+        except Exception:
+            pass
 
         site_data = processor.process_and_organize_images(
             source_dir=temp_dir,
@@ -438,7 +440,7 @@ if ingest_clicked:
             radius_meters=proximity_radius,
             progress_callback=_update_processing_progress,
             image_paths=image_paths_for_processing,
-            drive_manager=drive,
+            drive_manager=proc_drive,
             drive_output_folder_id=st.session_state.get('processed_folder_id')
         )
 
@@ -455,7 +457,7 @@ if ingest_clicked:
 
         st.session_state.processed_sites = site_data
 
-        # Auto-populate customer info from metadata on first load ingestion
+        # Auto-populate customer info from metadata
         if site_data:
             first_site = site_data[0]
             first_address = first_site.get("address", "")
@@ -475,8 +477,6 @@ if ingest_clicked:
             }
             _save_session_metadata(site_data)
 
-        st.success(f"Successfully processed {len(site_data)} unique DFR sites!")
-        progress_text.caption("100% - Complete")
         st.rerun()
     except Exception as e:
         st.error(f"Processing failed: {e}")
@@ -538,12 +538,14 @@ with tab1:
                 "role": "POC",
                 "name": st.session_state.customer_info.get("poc_name", ""),
                 "email": st.session_state.customer_info.get("poc_email", ""),
+                "title": "",
             })
         if st.session_state.customer_info.get("it_director") or st.session_state.customer_info.get("it_email"):
             st.session_state.poc_rows.append({
                 "role": "IT",
                 "name": st.session_state.customer_info.get("it_director", ""),
                 "email": st.session_state.customer_info.get("it_email", ""),
+                "title": "",
             })
 
     # Merge in any new contacts pulled from Gmail (avoid duplicates)
@@ -556,6 +558,7 @@ with tab1:
                     "role": "",
                     "name": c.get("name", ""),
                     "email": c["email"],
+                    "title": c.get("title", ""),
                 })
                 existing_emails.add(c["email"].lower())
 
@@ -563,13 +566,14 @@ with tab1:
     role_options = ["", "POC", "IT", "Facilities", "Other"]
     rows_to_remove = []
     if st.session_state.poc_rows:
-        hc1, hc2, hc3, hc4 = st.columns([1, 2, 3, 0.5])
+        hc1, hc2, hc3, hc4, hc5 = st.columns([1, 2, 2, 2, 0.5])
         hc1.caption("Role")
         hc2.caption("Name")
-        hc3.caption("Email")
-        hc4.caption("")
+        hc3.caption("Title / Rank")
+        hc4.caption("Email")
+        hc5.caption("")
     for i, row in enumerate(st.session_state.poc_rows):
-        rc1, rc2, rc3, rc4 = st.columns([1, 2, 3, 0.5])
+        rc1, rc2, rc3, rc4, rc5 = st.columns([1, 2, 2, 2, 0.5])
         with rc1:
             st.session_state.poc_rows[i]["role"] = st.selectbox(
                 "Role", role_options, index=role_options.index(row["role"]) if row["role"] in role_options else 0,
@@ -581,11 +585,16 @@ with tab1:
                 placeholder="Name",
             )
         with rc3:
+            st.session_state.poc_rows[i]["title"] = st.text_input(
+                "Title", value=row.get("title", ""), key=f"poc_title_{i}", label_visibility="collapsed",
+                placeholder="Title / Rank",
+            )
+        with rc4:
             st.session_state.poc_rows[i]["email"] = st.text_input(
                 "Email", value=row["email"], key=f"poc_email_{i}", label_visibility="collapsed",
                 placeholder="Email",
             )
-        with rc4:
+        with rc5:
             if st.button("✕", key=f"poc_del_{i}"):
                 rows_to_remove.append(i)
 
@@ -595,7 +604,7 @@ with tab1:
         st.rerun()
 
     if st.button("＋ Add Contact", key="add_poc_row"):
-        st.session_state.poc_rows.append({"role": "", "name": "", "email": ""})
+        st.session_state.poc_rows.append({"role": "", "name": "", "email": "", "title": ""})
         st.rerun()
 
     # Sync the POC table back to customer_info for report generation

@@ -14,6 +14,17 @@ import streamlit as st
 import google_oauth
 
 
+# Emails that should never appear as contacts (exact match on lowercased email)
+_BLOCKED_EMAILS = {
+    "calendar-notification@google.com",
+}
+
+# Email local-part prefixes that indicate automated/non-person senders
+_BLOCKED_EMAIL_PREFIXES = re.compile(
+    r'^(noreply|no-reply|donotreply|do-not-reply)@', re.IGNORECASE,
+)
+
+
 def _get_gmail_service():
     """Build a Gmail API service using the current user's OAuth credentials."""
     creds = google_oauth.get_credentials()
@@ -28,6 +39,16 @@ def _get_calendar_service():
     if not creds:
         return None
     return build("calendar", "v3", credentials=creds)
+
+
+def _is_blocked_email(email):
+    """Return True if the email address belongs to a known automated sender."""
+    lower = email.lower()
+    if lower in _BLOCKED_EMAILS:
+        return True
+    if _BLOCKED_EMAIL_PREFIXES.match(lower):
+        return True
+    return False
 
 
 def _extract_external_contacts(headers, my_domain="brincdrones.com"):
@@ -54,6 +75,11 @@ def _extract_external_contacts(headers, my_domain="brincdrones.com"):
                 continue
             if email_lower in seen_emails:
                 continue
+            # Skip known automated/non-person emails
+            if _is_blocked_email(email):
+                continue
+            if _is_non_person_name(display_name):
+                continue
             seen_emails.add(email_lower)
             contacts.append({"name": display_name or "", "email": email})
 
@@ -73,6 +99,108 @@ def _is_non_person_name(name):
     if not name:
         return False
     return bool(_NON_PERSON_PATTERNS.search(name.strip()))
+
+
+# Title keywords to look for in email signatures
+_TITLE_KEYWORDS = re.compile(
+    r'\b(Chief\s+of\s+Police|Police\s+Chief|Captain|Lieutenant|Sergeant|Detective|Commander|'
+    r'Deputy\s+Chief|Corporal|Officer|Sheriff|Undersheriff|Marshal|'
+    r'Director|Manager|Coordinator|Administrator|Superintendent|'
+    r'IT\s+Director|CIO|CTO|CISO|Systems?\s+Administrator|Network\s+Administrator|'
+    r'Engineer|Analyst|Specialist|Technician|Supervisor|'
+    r'City\s+Manager|Town\s+Manager|Assistant\s+Chief)\b',
+    re.IGNORECASE,
+)
+
+# Common signature delimiters
+_SIG_DELIMITERS = re.compile(r'^(\s*--\s*$|_{3,}|\u2014{1,}|={3,})')
+
+
+def _get_plain_text_body(payload):
+    """Recursively extract the text/plain body from a Gmail message payload."""
+    mime = payload.get("mimeType", "")
+    if mime == "text/plain":
+        data = payload.get("body", {}).get("data", "")
+        if data:
+            return base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+    for part in payload.get("parts", []):
+        text = _get_plain_text_body(part)
+        if text:
+            return text
+    return ""
+
+
+def _extract_signature_info(gmail, msg_id):
+    """Fetch the message body and parse the email signature for title/role info.
+
+    Returns a dict {"name": "...", "title": "...", "email": "..."} or None.
+    """
+    try:
+        msg = gmail.users().messages().get(
+            userId="me", id=msg_id, format="full",
+        ).execute()
+    except Exception:
+        return None
+
+    body = _get_plain_text_body(msg.get("payload", {}))
+    if not body:
+        return None
+
+    lines = body.splitlines()
+
+    # Find signature block: look for a delimiter, then take lines after it.
+    # If no delimiter, fall back to the last 15 lines.
+    sig_start = None
+    for i, line in enumerate(lines):
+        if _SIG_DELIMITERS.match(line):
+            sig_start = i + 1
+            # Use the *last* delimiter found (signatures are at the bottom)
+
+    if sig_start is not None:
+        sig_lines = lines[sig_start:]
+    else:
+        sig_lines = lines[-15:]
+
+    # Strip empty lines and look for a title keyword
+    title = None
+    sig_name = None
+    sig_email = None
+
+    for line in sig_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # Check for title keyword
+        if title is None:
+            m = _TITLE_KEYWORDS.search(stripped)
+            if m:
+                # Use the whole line as the title (e.g. "IT Director, City of Lansing")
+                title = stripped
+
+        # Check for an email address in the signature
+        if sig_email is None:
+            email_match = re.search(r'[\w.+-]+@[\w.-]+\.\w+', stripped)
+            if email_match:
+                sig_email = email_match.group(0)
+
+    if not title:
+        return None
+
+    # The name is usually the first non-empty line in the signature block
+    for line in sig_lines:
+        stripped = line.strip()
+        if stripped and not _TITLE_KEYWORDS.search(stripped) and '@' not in stripped:
+            # Looks like a name line if it's short-ish and doesn't have URLs
+            if len(stripped) < 60 and 'http' not in stripped.lower():
+                sig_name = stripped
+                break
+
+    return {
+        "name": sig_name or "",
+        "title": title,
+        "email": sig_email or "",
+    }
 
 
 def search_gmail_for_contacts(agency_name, city=None):
@@ -137,6 +265,34 @@ def search_gmail_for_contacts(agency_name, city=None):
                     ).execute()
                     headers = msg.get("payload", {}).get("headers", [])
                     contacts = _extract_external_contacts(headers)
+
+                    # Try to extract title/role from the email signature
+                    sig_info = _extract_signature_info(gmail, msg_stub["id"])
+
+                    for c in contacts:
+                        c.setdefault("title", "")
+
+                    # If we got signature info, attach the title to matching contact
+                    if sig_info and sig_info.get("title"):
+                        matched = False
+                        sig_email_lower = (sig_info.get("email") or "").lower()
+                        for c in contacts:
+                            if sig_email_lower and c["email"].lower() == sig_email_lower:
+                                c["title"] = sig_info["title"]
+                                matched = True
+                                break
+                        # If no email match, try matching by name
+                        if not matched and sig_info.get("name"):
+                            sig_name_lower = sig_info["name"].lower()
+                            for c in contacts:
+                                if c["name"] and sig_name_lower in c["name"].lower():
+                                    c["title"] = sig_info["title"]
+                                    matched = True
+                                    break
+                        # If still no match, attach to the From contact (first in list)
+                        if not matched and contacts:
+                            contacts[0]["title"] = sig_info["title"]
+
                     all_contacts.extend(contacts)
             except Exception as e:
                 err_str = str(e)
@@ -167,9 +323,11 @@ def search_gmail_for_contacts(agency_name, city=None):
                         # Skip resource calendars and non-person entries
                         if attendee.get("resource"):
                             continue
+                        if _is_blocked_email(email):
+                            continue
                         if _is_non_person_name(name):
                             continue
-                        all_contacts.append({"name": name, "email": email})
+                        all_contacts.append({"name": name, "email": email, "title": ""})
     except Exception as e:
         print(f"Calendar search error: {e}")
 
@@ -183,12 +341,20 @@ def search_gmail_for_contacts(agency_name, city=None):
 
     result["status"] = "connected"
 
-    # Deduplicate by email, keeping the first name seen
+    # Deduplicate by email, keeping the first name seen and best title
     seen = {}
     for c in all_contacts:
+        c.setdefault("title", "")
         email_lower = c["email"].lower()
         if email_lower not in seen:
             seen[email_lower] = c
+        else:
+            # Merge: keep existing name but update title if we found one
+            existing = seen[email_lower]
+            if not existing.get("title") and c.get("title"):
+                existing["title"] = c["title"]
+            if not existing.get("name") and c.get("name"):
+                existing["name"] = c["name"]
 
     unique_contacts = list(seen.values())
     result["all_contacts"] = unique_contacts
@@ -201,8 +367,9 @@ def search_gmail_for_contacts(agency_name, city=None):
     for contact in unique_contacts:
         name = contact["name"]
         email = contact["email"]
+        title = contact.get("title", "")
 
-        if it_keywords.search(name) or it_keywords.search(email.split("@")[0]):
+        if it_keywords.search(name) or it_keywords.search(email.split("@")[0]) or it_keywords.search(title):
             if not result["it_director"]:
                 result["it_director"] = name
                 result["it_email"] = email
