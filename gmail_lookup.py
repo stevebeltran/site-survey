@@ -209,83 +209,121 @@ def _extract_body_contacts(gmail, msg_id):
                 contacts.append({"name": name, "title": title, "email": email, "phone": ""})
         i += 1
 
-    # --- Pass 2: parse signature block at the end of the message ---
-    sig_start = None
-    for idx, line in enumerate(lines):
-        if _SIG_DELIMITERS.match(line):
-            sig_start = idx + 1
+    # --- Pass 2: parse signature blocks throughout the message ---
+    # In reply chains the sender's signature sits ABOVE a reply separator
+    # (e.g. ________________________________ or --).  Scan the region above
+    # each delimiter as well as after the last one so we capture every
+    # participant's contact details (especially phone numbers).
+    delimiter_indices = [idx for idx, line in enumerate(lines) if _SIG_DELIMITERS.match(line)]
 
-    sig_lines = lines[sig_start:] if sig_start is not None else lines[-15:]
-
-    sig_title = None
-    sig_name = None
-    sig_email = None
-    sig_phone = None
-    title_line_idx = None
+    sig_segments = []
+    for d_idx in delimiter_indices:
+        start = max(0, d_idx - 15)
+        sig_segments.append(lines[start:d_idx])
+    if delimiter_indices:
+        sig_segments.append(lines[delimiter_indices[-1] + 1:])
+    else:
+        sig_segments.append(lines[-15:])
 
     # Plausible person name: 2+ capitalised words, allows periods/hyphens/apostrophes
     _name_like = re.compile(r"^[A-Z][a-zA-Z.'\-]+(?:\s+[A-Z][a-zA-Z.'\-]+)+$")
 
-    for idx, line in enumerate(sig_lines):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if sig_title is None:
-            tm = _TITLE_KEYWORDS.search(stripped)
-            if tm:
-                matched_keyword = tm.group(0)
-                # Check if line has both title and name on the same line.
-                # e.g. "Deputy Chief Mike Hynek" or "Mike Hynek, Deputy Chief"
-                after_title = stripped[tm.end():].strip().lstrip(',-|').strip()
-                before_title = stripped[:tm.start()].strip().rstrip(',-|').strip()
-                if after_title and _name_like.match(after_title) and not _ORG_WORDS.search(after_title):
-                    sig_title = matched_keyword
-                    sig_name = after_title
-                elif before_title and _name_like.match(before_title) and not _ORG_WORDS.search(before_title):
-                    sig_title = matched_keyword
-                    sig_name = before_title
-                else:
-                    sig_title = stripped
-                title_line_idx = idx
-        if sig_email is None:
-            em = _email_re.search(stripped)
-            if em:
-                sig_email = em.group(0)
-        if sig_phone is None:
-            pm = _phone_re.search(stripped)
-            if pm:
-                sig_phone = pm.group(0)
+    for seg_lines in sig_segments:
+        sig_title = None
+        sig_name = None
+        sig_email = None
+        sig_phone = None
+        title_line_idx = None
 
-    # Name: look backwards from the title line if the name wasn't already
-    # found on the title line itself.  In typical signatures the name sits
-    # directly above the title ("John Emery\nIT Manager").
-    if title_line_idx is not None and sig_name is None:
-        for idx in range(title_line_idx - 1, max(title_line_idx - 4, -1), -1):
-            stripped = sig_lines[idx].strip()
+        for idx, line in enumerate(seg_lines):
+            stripped = line.strip()
             if not stripped:
                 continue
-            if _TITLE_KEYWORDS.search(stripped):
-                continue
-            if '@' in stripped or 'http' in stripped.lower():
-                continue
-            if _phone_re.search(stripped):
-                continue
-            if len(stripped) > 60:
-                continue
-            sig_name = stripped
-            break
+            if sig_title is None:
+                tm = _TITLE_KEYWORDS.search(stripped)
+                if tm:
+                    matched_keyword = tm.group(0)
+                    # Check if line has both title and name on the same line.
+                    # e.g. "Deputy Chief Mike Hynek" or "Mike Hynek, Deputy Chief"
+                    after_title = stripped[tm.end():].strip().lstrip(',-|').strip()
+                    before_title = stripped[:tm.start()].strip().rstrip(',-|').strip()
+                    if after_title and _name_like.match(after_title) and not _ORG_WORDS.search(after_title):
+                        sig_title = matched_keyword
+                        sig_name = after_title
+                    elif before_title and _name_like.match(before_title) and not _ORG_WORDS.search(before_title):
+                        sig_title = matched_keyword
+                        sig_name = before_title
+                    else:
+                        sig_title = stripped
+                    title_line_idx = idx
+            if sig_email is None:
+                em = _email_re.search(stripped)
+                if em:
+                    sig_email = em.group(0)
+            if sig_phone is None:
+                pm = _phone_re.search(stripped)
+                if pm:
+                    sig_phone = pm.group(0)
 
-    if sig_name or sig_title:
-        # Only add if we didn't already find this email in the roster
-        sig_email_lower = (sig_email or "").lower()
-        already_found = any(c["email"].lower() == sig_email_lower for c in contacts) if sig_email_lower else False
-        if not already_found:
-            contacts.append({
-                "name": sig_name or "",
-                "title": sig_title or "",
-                "email": sig_email or "",
-                "phone": sig_phone or "",
-            })
+        # Name: look backwards from the title line if the name wasn't already
+        # found on the title line itself.  In typical signatures the name sits
+        # directly above the title ("John Emery\nIT Manager").
+        if title_line_idx is not None and sig_name is None:
+            for idx in range(title_line_idx - 1, max(title_line_idx - 4, -1), -1):
+                stripped = seg_lines[idx].strip()
+                if not stripped:
+                    continue
+                if _TITLE_KEYWORDS.search(stripped):
+                    continue
+                if '@' in stripped or 'http' in stripped.lower():
+                    continue
+                if _phone_re.search(stripped):
+                    continue
+                if len(stripped) > 60:
+                    continue
+                sig_name = stripped
+                break
+
+        if sig_name or sig_title:
+            sig_email_lower = (sig_email or "").lower()
+            if sig_email_lower:
+                # Merge with existing contact if same email already found
+                existing = next((c for c in contacts if c["email"].lower() == sig_email_lower), None)
+                if existing:
+                    if sig_title and not existing.get("title"):
+                        existing["title"] = sig_title
+                    if sig_phone and not existing.get("phone"):
+                        existing["phone"] = sig_phone
+                    if sig_name and not existing.get("name"):
+                        existing["name"] = sig_name
+                else:
+                    contacts.append({
+                        "name": sig_name or "",
+                        "title": sig_title or "",
+                        "email": sig_email,
+                        "phone": sig_phone or "",
+                    })
+            else:
+                # No email in signature — try to match by name
+                matched = False
+                if sig_name:
+                    sig_name_lower = sig_name.lower()
+                    for c in contacts:
+                        c_name = c.get("name", "").lower()
+                        if c_name and (sig_name_lower == c_name or sig_name_lower in c_name or c_name in sig_name_lower):
+                            if sig_title and not c.get("title"):
+                                c["title"] = sig_title
+                            if sig_phone and not c.get("phone"):
+                                c["phone"] = sig_phone
+                            matched = True
+                            break
+                if not matched:
+                    contacts.append({
+                        "name": sig_name or "",
+                        "title": sig_title or "",
+                        "email": "",
+                        "phone": sig_phone or "",
+                    })
 
     return contacts
 
