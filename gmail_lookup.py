@@ -150,95 +150,109 @@ def _name_from_email(email):
     return local.capitalize()
 
 
-def _extract_signature_info(gmail, msg_id):
-    """Fetch the message body and parse the email signature for name/title/role.
+def _extract_body_contacts(gmail, msg_id):
+    """Fetch the full message body and extract all contacts found in it.
 
-    Returns a dict {"name": "...", "title": "...", "email": "..."} or None.
-    Always tries to extract a name even if no title is found.
+    Parses two patterns:
+    1. Inline roster: "Name - Title\\nemail@domain" (common in kickoff/intro emails)
+    2. Signature block: name, title, email, phone at the end of the message
+
+    Returns a list of dicts: [{"name": ..., "title": ..., "email": ...}, ...]
     """
     try:
         msg = gmail.users().messages().get(
             userId="me", id=msg_id, format="full",
         ).execute()
     except Exception:
-        return None
+        return []
 
     body = _get_plain_text_body(msg.get("payload", {}))
     if not body:
-        return None
+        return []
 
     lines = body.splitlines()
+    contacts = []
+    _email_re = re.compile(r'[\w.+-]+@[\w.-]+\.\w+')
+    _phone_re = re.compile(r'[\(]?\d{3}[\)\s.\-]?\s*\d{3}[\s.\-]?\d{4}')
+    # Pattern: "Name - Title" or "Name – Title" (with dash/en-dash separator)
+    _name_title_re = re.compile(r'^([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)+)\s*[-\u2013\u2014]\s*(.+)$')
 
-    # Find signature block: look for a delimiter, then take lines after it.
-    # If no delimiter, fall back to the last 15 lines.
+    # --- Pass 1: scan for inline "Name - Title\n email" roster entries ---
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        m = _name_title_re.match(stripped)
+        if m:
+            name = m.group(1).strip()
+            title = m.group(2).strip()
+            # Look ahead for an email on the next non-empty line
+            email = ""
+            for j in range(i + 1, min(i + 3, len(lines))):
+                next_line = lines[j].strip()
+                em = _email_re.search(next_line)
+                if em:
+                    email = em.group(0)
+                    i = j  # skip past the email line
+                    break
+                if next_line and not em:
+                    break
+            if email:
+                contacts.append({"name": name, "title": title, "email": email})
+        i += 1
+
+    # --- Pass 2: parse signature block at the end of the message ---
     sig_start = None
-    for i, line in enumerate(lines):
+    for idx, line in enumerate(lines):
         if _SIG_DELIMITERS.match(line):
-            sig_start = i + 1
-            # Use the *last* delimiter found (signatures are at the bottom)
+            sig_start = idx + 1
 
-    if sig_start is not None:
-        sig_lines = lines[sig_start:]
-    else:
-        sig_lines = lines[-15:]
+    sig_lines = lines[sig_start:] if sig_start is not None else lines[-15:]
 
-    title = None
+    sig_title = None
     sig_name = None
     sig_email = None
-    # Also look for phone numbers as a signal that we're in a signature
-    sig_phone = None
-    _phone_re = re.compile(r'[\(]?\d{3}[\)\s.\-]?\s*\d{3}[\s.\-]?\d{4}')
 
     for line in sig_lines:
         stripped = line.strip()
         if not stripped:
             continue
-
-        # Check for title keyword
-        if title is None:
-            m = _TITLE_KEYWORDS.search(stripped)
-            if m:
-                title = stripped
-
-        # Check for an email address in the signature
+        if sig_title is None:
+            tm = _TITLE_KEYWORDS.search(stripped)
+            if tm:
+                sig_title = stripped
         if sig_email is None:
-            email_match = re.search(r'[\w.+-]+@[\w.-]+\.\w+', stripped)
-            if email_match:
-                sig_email = email_match.group(0)
+            em = _email_re.search(stripped)
+            if em:
+                sig_email = em.group(0)
 
-        # Check for phone number
-        if sig_phone is None and _phone_re.search(stripped):
-            sig_phone = stripped
-
-    # The name is usually the first non-empty, non-title, non-email line
+    # Name: first non-empty line that isn't title/email/phone/url
     for line in sig_lines:
         stripped = line.strip()
         if not stripped:
             continue
         if _TITLE_KEYWORDS.search(stripped):
             continue
-        if '@' in stripped:
+        if '@' in stripped or 'http' in stripped.lower():
             continue
         if _phone_re.search(stripped):
             continue
-        # Skip lines that look like addresses or URLs
-        if 'http' in stripped.lower():
-            continue
         if len(stripped) > 60:
             continue
-        # Likely a name
         sig_name = stripped
         break
 
-    # Return info if we found a name OR a title (don't require both)
-    if not sig_name and not title:
-        return None
+    if sig_name or sig_title:
+        # Only add if we didn't already find this email in the roster
+        sig_email_lower = (sig_email or "").lower()
+        already_found = any(c["email"].lower() == sig_email_lower for c in contacts) if sig_email_lower else False
+        if not already_found:
+            contacts.append({
+                "name": sig_name or "",
+                "title": sig_title or "",
+                "email": sig_email or "",
+            })
 
-    return {
-        "name": sig_name or "",
-        "title": title or "",
-        "email": sig_email or "",
-    }
+    return contacts
 
 
 def search_gmail_for_contacts(agency_name, city=None):
@@ -283,6 +297,7 @@ def search_gmail_for_contacts(agency_name, city=None):
 
     all_contacts = []
     gmail_connected = False
+    seen_msg_ids = set()  # avoid processing the same message across queries
 
     for term in search_terms:
         for query in [
@@ -297,53 +312,46 @@ def search_gmail_for_contacts(agency_name, city=None):
                 gmail_connected = True
 
                 messages = resp.get("messages", [])
+                # Skip messages we already processed from an earlier query
+                messages = [m for m in messages if m["id"] not in seen_msg_ids]
+                seen_msg_ids.update(m["id"] for m in messages)
                 for msg_stub in messages:
                     msg = gmail.users().messages().get(
                         userId="me", id=msg_stub["id"], format="metadata",
                         metadataHeaders=["From", "To", "Cc", "Reply-To", "Subject"],
                     ).execute()
                     headers = msg.get("payload", {}).get("headers", [])
-                    contacts = _extract_external_contacts(headers)
-
-                    # Try to extract name/title from the email signature
-                    sig_info = _extract_signature_info(gmail, msg_stub["id"])
-
-                    for c in contacts:
+                    header_contacts = _extract_external_contacts(headers)
+                    for c in header_contacts:
                         c.setdefault("title", "")
 
-                    # Attach signature info (name and/or title) to matching contact
-                    if sig_info and (sig_info.get("title") or sig_info.get("name")):
-                        matched = False
-                        sig_email_lower = (sig_info.get("email") or "").lower()
-                        sig_name = sig_info.get("name", "")
-                        sig_title = sig_info.get("title", "")
+                    # Parse the full email body for inline contact rosters
+                    # and signature blocks (name, title, email, phone)
+                    body_contacts = _extract_body_contacts(gmail, msg_stub["id"])
 
-                        # Match by email first
-                        for c in contacts:
-                            if sig_email_lower and c["email"].lower() == sig_email_lower:
-                                if sig_title and not c["title"]:
-                                    c["title"] = sig_title
-                                if sig_name and not c["name"]:
-                                    c["name"] = sig_name
+                    # Merge body info into header contacts by email
+                    for bc in body_contacts:
+                        bc_email = bc.get("email", "").lower()
+                        if not bc_email:
+                            continue
+                        matched = False
+                        for hc in header_contacts:
+                            if hc["email"].lower() == bc_email:
+                                if bc.get("name") and not hc["name"]:
+                                    hc["name"] = bc["name"]
+                                if bc.get("title") and not hc["title"]:
+                                    hc["title"] = bc["title"]
                                 matched = True
                                 break
-                        # Match by name
-                        if not matched and sig_name:
-                            sig_name_lower = sig_name.lower()
-                            for c in contacts:
-                                if c["name"] and sig_name_lower in c["name"].lower():
-                                    if sig_title and not c["title"]:
-                                        c["title"] = sig_title
-                                    matched = True
-                                    break
-                        # Fall back to the From contact (first in list)
-                        if not matched and contacts:
-                            if sig_title and not contacts[0]["title"]:
-                                contacts[0]["title"] = sig_title
-                            if sig_name and not contacts[0]["name"]:
-                                contacts[0]["name"] = sig_name
+                        # Body contact not in headers — add it directly
+                        if not matched and not _is_blocked_email(bc_email):
+                            header_contacts.append({
+                                "name": bc.get("name", ""),
+                                "email": bc["email"],
+                                "title": bc.get("title", ""),
+                            })
 
-                    all_contacts.extend(contacts)
+                    all_contacts.extend(header_contacts)
             except Exception as e:
                 err_str = str(e)
                 if "403" in err_str or "401" in err_str or "delegation" in err_str.lower():
