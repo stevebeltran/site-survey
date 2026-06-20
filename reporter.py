@@ -129,6 +129,119 @@ def query_airspace_class(lat, lon):
         
     return "Class G"
 
+
+def query_city_boundary(city_name, state_name=None):
+    """Fetch the GeoJSON boundary polygon for a city from OpenStreetMap.
+
+    Uses the Overpass API to find the administrative boundary (admin_level=8)
+    matching the city name. Returns the polygon as GeoJSON geometry, or None.
+
+    Args:
+        city_name: e.g. "Zionsville"
+        state_name: e.g. "Indiana" (optional, helps disambiguate)
+
+    Returns:
+        dict with GeoJSON geometry (type, coordinates), or None on failure.
+    """
+    if not city_name:
+        return None
+
+    url = "https://overpass-api.de/api/interpreter"
+    # admin_level=8 is city/town in the US
+    area_filter = ""
+    if state_name:
+        area_filter = f'area["name"="{state_name}"]["admin_level"="4"]->.state;'
+
+    in_area = "(area.state)" if state_name else ""
+    query = f"""
+    [out:json][timeout:10];
+    {area_filter}
+    relation["name"="{city_name}"]["admin_level"="8"]{in_area};
+    out geom;
+    """
+    try:
+        headers = {"Accept": "application/json", "User-Agent": "DFR-SiteSurvey/1.0"}
+        response = requests.post(url, data={"data": query}, headers=headers, timeout=20)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        elements = data.get("elements", [])
+        if not elements:
+            return None
+
+        # Build the polygon from the relation's members
+        relation = elements[0]
+        outer_rings = []
+        for member in relation.get("members", []):
+            if member.get("type") == "way" and member.get("role") in ("outer", ""):
+                coords = [(pt["lon"], pt["lat"]) for pt in member.get("geometry", [])]
+                if coords:
+                    outer_rings.append(coords)
+
+        if not outer_rings:
+            return None
+
+        # Try to merge connected ways into a single ring
+        merged = _merge_way_segments(outer_rings)
+
+        if len(merged) == 1:
+            return {"type": "Polygon", "coordinates": [merged[0]]}
+        else:
+            return {"type": "MultiPolygon", "coordinates": [[ring] for ring in merged]}
+
+    except Exception as e:
+        print(f"Error querying city boundary from Overpass: {e}")
+        return None
+
+
+def _merge_way_segments(segments):
+    """Merge ordered way segments into closed rings by connecting endpoints."""
+    if not segments:
+        return []
+    # Work with copies
+    remaining = [list(s) for s in segments]
+    rings = []
+
+    while remaining:
+        current = remaining.pop(0)
+        changed = True
+        while changed:
+            changed = False
+            for i, seg in enumerate(remaining):
+                # Check if seg connects to the end of current
+                if _coords_close(current[-1], seg[0]):
+                    current.extend(seg[1:])
+                    remaining.pop(i)
+                    changed = True
+                    break
+                elif _coords_close(current[-1], seg[-1]):
+                    current.extend(reversed(seg[:-1]))
+                    remaining.pop(i)
+                    changed = True
+                    break
+                elif _coords_close(current[0], seg[-1]):
+                    current = seg[:-1] + current
+                    remaining.pop(i)
+                    changed = True
+                    break
+                elif _coords_close(current[0], seg[0]):
+                    current = list(reversed(seg[1:])) + current
+                    remaining.pop(i)
+                    changed = True
+                    break
+        # Close the ring if needed
+        if not _coords_close(current[0], current[-1]):
+            current.append(current[0])
+        rings.append(current)
+
+    return rings
+
+
+def _coords_close(a, b, tol=1e-6):
+    """Check if two (lon, lat) coordinate pairs are approximately equal."""
+    return abs(a[0] - b[0]) < tol and abs(a[1] - b[1]) < tol
+
+
 def draw_styled_map(site_data_list, output_map_path):
     """
     Create a beautiful stylized site coordinates map visualization using PIL.

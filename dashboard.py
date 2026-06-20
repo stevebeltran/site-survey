@@ -21,6 +21,8 @@ if '"' in current_cwd or "'" in current_cwd:
     os.chdir(current_cwd.replace('"', '').replace("'", ""))
 
 # Import our modules
+import folium
+from streamlit_folium import st_folium
 import processor
 import analyzer
 import reporter
@@ -295,6 +297,7 @@ def _on_files_changed():
     """Reset GPS detection and processing flag when the user changes files."""
     st.session_state.pop("gps_detected_agency", None)
     st.session_state.pop("_auto_processed", None)
+    st.session_state.pop("city_boundary_geojson", None)
 
 # Collapse the uploader once sites have been processed
 _has_sites = bool(st.session_state.get("processed_sites"))
@@ -639,12 +642,71 @@ with tab1:
     with col2:
         st.subheader("Site Detail & Map Visualisation")
         if st.session_state.processed_sites:
-            # Show map
-            map_data = pd.DataFrame([
-                {"lat": s['latitude'], "lon": s['longitude'], "name": s['address'].split(',')[0]}
-                for s in st.session_state.processed_sites
-            ])
-            st.map(map_data, zoom=12)
+            # Build Folium map with site markers, 2-mile radius rings, and city boundary
+            sites = st.session_state.processed_sites
+            center_lat = sum(s['latitude'] for s in sites) / len(sites)
+            center_lon = sum(s['longitude'] for s in sites) / len(sites)
+
+            m = folium.Map(location=[center_lat, center_lon], zoom_start=13,
+                           tiles="CartoDB positron")
+
+            # City boundary overlay
+            if "city_boundary_geojson" not in st.session_state:
+                city = st.session_state.get("gps_detected_agency", {}).get("city", "")
+                state = ""
+                # Extract state from Nominatim address
+                # Format: "..., City, County, State, ZIP, United States"
+                # State is the alpha-only part just before the zip code
+                addr = st.session_state.customer_info.get("agency_address", "")
+                addr_parts = [p.strip() for p in addr.split(",")]
+                for idx, part in enumerate(addr_parts):
+                    # Look for a part that's followed by a ZIP code
+                    if idx + 1 < len(addr_parts) and addr_parts[idx + 1].strip()[:5].isdigit():
+                        state = part
+                        break
+                geojson = reporter.query_city_boundary(city, state) if city else None
+                st.session_state.city_boundary_geojson = geojson
+
+            boundary = st.session_state.city_boundary_geojson
+            if boundary:
+                folium.GeoJson(
+                    boundary,
+                    name="City Boundary",
+                    style_function=lambda _: {
+                        "fillColor": "#3b82f6",
+                        "color": "#1e40af",
+                        "weight": 2,
+                        "fillOpacity": 0.08,
+                    },
+                ).add_to(m)
+
+            TWO_MILES_M = 3218.69  # 2 miles in meters
+
+            for site in sites:
+                lat, lon = site['latitude'], site['longitude']
+                label = site['address'].split(',')[0]
+
+                # 2-mile radius ring
+                folium.Circle(
+                    location=[lat, lon],
+                    radius=TWO_MILES_M,
+                    color="#ef4444",
+                    weight=1.5,
+                    fill=True,
+                    fill_color="#ef4444",
+                    fill_opacity=0.06,
+                    tooltip=f"2-mile radius — {label}",
+                ).add_to(m)
+
+                # Site marker
+                folium.Marker(
+                    location=[lat, lon],
+                    tooltip=label,
+                    popup=f"<b>{site['site_id']}</b><br>{label}<br>Airspace: {site.get('airspace', 'N/A')}",
+                    icon=folium.Icon(color="red", icon="tower-broadcast", prefix="fa"),
+                ).add_to(m)
+
+            st_folium(m, use_container_width=True, height=450, returned_objects=[])
             
             # Show detailed card for selected site
             selected_site_idx = st.selectbox("Select Site to Inspect", range(len(st.session_state.processed_sites)), format_func=lambda idx: st.session_state.processed_sites[idx]['site_id'])
