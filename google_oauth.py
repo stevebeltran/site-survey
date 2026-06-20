@@ -67,7 +67,8 @@ def _delete_token_file():
         pass  # File already gone or inaccessible
 
 
-# On module load, attempt to restore tokens from disk
+# On module load, attempt to restore tokens from disk (first import only;
+# get_credentials() also calls this so new sessions after F5 are covered).
 _load_token_from_disk()
 
 
@@ -209,6 +210,9 @@ def get_credentials():
     Returns:
         google.oauth2.credentials.Credentials or None
     """
+    # Restore tokens from disk on new sessions (F5 refresh etc.)
+    _load_token_from_disk()
+
     token_data = st.session_state.get(_TOKEN_KEY)
     if not token_data:
         return None
@@ -249,6 +253,7 @@ def get_credentials():
 
 def get_user_email():
     """Return the authenticated user's email, or None."""
+    _load_token_from_disk()
     return st.session_state.get(_EMAIL_KEY)
 
 
