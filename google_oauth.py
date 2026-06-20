@@ -71,6 +71,22 @@ def _delete_token_file():
 _load_token_from_disk()
 
 
+def _get_redirect_uri():
+    """Return the OAuth redirect URI for the current environment.
+
+    On Streamlit Cloud the Host header gives the public domain; locally
+    it falls back to the GOOGLE_OAUTH_REDIRECT_URI secret.
+    """
+    try:
+        host = st.context.headers.get("Host", "")
+        if host and "localhost" not in host and "127.0.0.1" not in host:
+            proto = st.context.headers.get("X-Forwarded-Proto", "https")
+            return f"{proto}://{host}"
+    except Exception:
+        pass
+    return st.secrets.get("GOOGLE_OAUTH_REDIRECT_URI", "http://localhost:8501")
+
+
 def _get_client_config():
     """Build the OAuth client config dict from Streamlit secrets."""
     return {
@@ -79,7 +95,7 @@ def _get_client_config():
             "client_secret": st.secrets["GOOGLE_OAUTH_CLIENT_SECRET"],
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [st.secrets["GOOGLE_OAUTH_REDIRECT_URI"]],
+            "redirect_uris": [_get_redirect_uri()],
         }
     }
 
@@ -111,7 +127,7 @@ def get_auth_url():
     """
     params = {
         "client_id": st.secrets["GOOGLE_OAUTH_CLIENT_ID"],
-        "redirect_uri": st.secrets["GOOGLE_OAUTH_REDIRECT_URI"],
+        "redirect_uri": _get_redirect_uri(),
         "response_type": "code",
         "scope": " ".join(SCOPES),
         "access_type": "offline",
@@ -141,7 +157,7 @@ def handle_callback():
         flow = Flow.from_client_config(
             _get_client_config(),
             scopes=SCOPES,
-            redirect_uri=st.secrets["GOOGLE_OAUTH_REDIRECT_URI"],
+            redirect_uri=_get_redirect_uri(),
         )
         # No PKCE — auth URL was built without code_challenge
         flow.code_verifier = None
