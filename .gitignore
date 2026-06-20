@@ -51,6 +51,7 @@ Thumbs.db
 .streamlit/secrets.toml
 .streamlit/secrets.toml.local
 .streamlit/STREAMLIT_SECRETS_CORRECT.txt
+.streamlit/client_secret_*.json
 
 # Docs / superpowers (local only)
 docs/
