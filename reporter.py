@@ -791,3 +791,190 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
             print(f"Failed to upload report to Google Drive: {e}")
 
     return output_filepath
+
+
+def _yn(value):
+    """Convert bool/None to Yes/No/— string."""
+    if value is True:
+        return "Yes"
+    elif value is False:
+        return "No"
+    return "—"
+
+
+def generate_candidate_site_report(candidate_sites, output_filepath,
+                                    customer_info=None, drive_manager=None,
+                                    drive_reports_folder_id=None):
+    """Generate a dynamic DOCX report from CandidateSite objects.
+
+    Report structure:
+    1. Executive Summary
+    2. Candidate Site sections (1-N, dynamic)
+    3. Installer Quick Reference (1 page per site)
+    4. Annotated Photo Appendix
+    """
+    from docx import Document
+    from docx.shared import Inches, Pt, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    doc = Document()
+    style = doc.styles["Normal"]
+    font = style.font
+    font.name = "Calibri"
+    font.size = Pt(10)
+
+    # ── 1. Executive Summary ──
+    title = doc.add_heading("DFR SITE SURVEY REPORT", level=0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    agency = ""
+    survey_date = ""
+    surveyor = ""
+    if candidate_sites:
+        agency = candidate_sites[0].identity.agency_name
+        survey_date = candidate_sites[0].identity.survey_date or ""
+        surveyor = candidate_sites[0].identity.surveyor or ""
+    if customer_info:
+        agency = customer_info.get("agency_name", agency)
+
+    doc.add_paragraph(f"Agency: {agency}")
+    doc.add_paragraph(f"Survey Date: {survey_date}")
+    doc.add_paragraph(f"Surveyor: {surveyor}")
+    doc.add_paragraph(f"Candidate Sites Found: {len(candidate_sites)}")
+    doc.add_page_break()
+
+    # ── 2. Candidate Site Sections ──
+    for idx, site in enumerate(candidate_sites, start=1):
+        doc.add_heading(f"Candidate Site {idx}: {site.identity.site_name}", level=1)
+
+        # 2a. Site Overview
+        doc.add_heading("Site Overview", level=2)
+        overview_data = [
+            ["Site ID", site.identity.site_id],
+            ["Address", site.identity.site_address],
+            ["Latitude", str(site.identity.site_latitude)],
+            ["Longitude", str(site.identity.site_longitude)],
+            ["Elevation", f"{site.identity.site_elevation} ft" if site.identity.site_elevation else "—"],
+            ["Building Height", f"{site.structure.building_height} ft" if site.structure.building_height else "—"],
+            ["Roof Type", site.structure.roof_type or "—"],
+        ]
+        add_styled_table(doc, overview_data, ["Field", "Value"])
+
+        # 2b. Site Photos by Category
+        doc.add_heading("Site Photos", level=2)
+        for cat in ["Site", "Installation", "Infrastructure", "RF", "Access"]:
+            cat_photos = [p for p in site.photos if p.category == cat and p.selected_for_report]
+            if not cat_photos:
+                continue
+            doc.add_heading(f"{cat} Photos", level=3)
+            for photo in cat_photos:
+                if os.path.exists(photo.file_path):
+                    try:
+                        doc.add_picture(photo.file_path, width=Inches(5.0))
+                    except Exception:
+                        doc.add_paragraph(f"[Photo: {photo.photo_id}]")
+                else:
+                    doc.add_paragraph(f"[Photo: {photo.photo_id}]")
+
+        # 2c. Access
+        doc.add_heading("Access", level=3)
+        add_styled_table(doc, [
+            ["Access Type", site.access.access_type or "—"],
+            ["Roof Access", site.access.roof_access or "—"],
+            ["Escort Required", _yn(site.access.escort_required)],
+            ["Key Required", _yn(site.access.key_required)],
+            ["After Hours Access", _yn(site.access.after_hours_access)],
+            ["Parking Available", _yn(site.access.parking_available)],
+        ], ["Field", "Value"])
+
+        # 2d. Electrical Assessment
+        doc.add_heading("Electrical Assessment", level=3)
+        add_styled_table(doc, [
+            ["Power Available", _yn(site.electrical.power_available)],
+            ["Voltage", site.electrical.voltage_available or "—"],
+            ["Breaker Available", _yn(site.electrical.breaker_available)],
+            ["Dedicated Circuit", _yn(site.electrical.dedicated_circuit)],
+            ["Panel Location", site.electrical.panel_location or "—"],
+            ["Distance to Power", f"{site.electrical.distance_to_power} ft" if site.electrical.distance_to_power else "—"],
+        ], ["Field", "Value"])
+
+        # 2e. Network Assessment
+        doc.add_heading("Network Assessment", level=3)
+        add_styled_table(doc, [
+            ["ISP Provider", site.network.isp_provider or "—"],
+            ["Connection Type", site.network.connection_type or "—"],
+            ["Download Speed", site.network.download_speed or "—"],
+            ["Upload Speed", site.network.upload_speed or "—"],
+            ["Static IP", _yn(site.network.static_ip_available)],
+            ["Switch Location", site.network.switch_location or "—"],
+            ["Distance to Network", f"{site.network.distance_to_network} ft" if site.network.distance_to_network else "—"],
+        ], ["Field", "Value"])
+
+        # 2f. RF Assessment
+        doc.add_heading("RF Assessment", level=3)
+        add_styled_table(doc, [
+            ["Line of Sight", site.rf.line_of_sight_status or "—"],
+            ["Obstructions - Trees", _yn(site.rf.obstruction_trees)],
+            ["Obstructions - Buildings", _yn(site.rf.obstruction_buildings)],
+            ["Obstructions - Water Towers", _yn(site.rf.obstruction_water_towers)],
+            ["Obstructions - Cell Towers", _yn(site.rf.obstruction_cell_towers)],
+            ["Coverage Direction", site.rf.coverage_direction or "—"],
+        ], ["Field", "Value"])
+
+        # 2g. Airspace Assessment
+        doc.add_heading("Airspace Assessment", level=3)
+        add_styled_table(doc, [
+            ["Airspace Class", site.flight.airspace_class or "—"],
+            ["Nearby Airports", site.flight.nearby_airports or "—"],
+            ["Nearby Heliports", site.flight.nearby_heliports or "—"],
+            ["Flight Restrictions", site.flight.flight_restrictions or "—"],
+        ], ["Field", "Value"])
+
+        doc.add_page_break()
+
+    # ── 3. Installer Quick Reference ──
+    doc.add_heading("Installer Quick Reference", level=1)
+    for idx, site in enumerate(candidate_sites, start=1):
+        doc.add_heading(f"Site {idx}: {site.identity.site_name}", level=2)
+        add_styled_table(doc, [
+            ["Address", site.identity.site_address],
+            ["Access Method", site.access.roof_access or site.access.access_type or "—"],
+            ["Power Location", site.electrical.panel_location or "—"],
+            ["Network Location", site.network.switch_location or "—"],
+            ["Antenna Location", f"{site.rf.antenna_latitude}, {site.rf.antenna_longitude}" if site.rf.antenna_latitude else "—"],
+            ["Escort Required", _yn(site.access.escort_required)],
+        ], ["Item", "Details"])
+        if customer_info:
+            poc = customer_info.get("poc_name", "")
+            phone = customer_info.get("poc_phone", "")
+            if poc:
+                doc.add_paragraph(f"Site Contact: {poc}  {phone}")
+        doc.add_page_break()
+
+    # ── 4. Annotated Photo Appendix ──
+    doc.add_heading("Annotated Photo Appendix", level=1)
+    has_annotations = False
+    for idx, site in enumerate(candidate_sites, start=1):
+        folder = getattr(site.identity, '_folder_path', None)
+        if folder and os.path.isdir(folder):
+            for fname in sorted(os.listdir(folder)):
+                if fname.startswith("engineering_layout") and fname.endswith(".png"):
+                    img_path = os.path.join(folder, fname)
+                    doc.add_heading(f"Site {idx}: {site.identity.site_name}", level=3)
+                    try:
+                        doc.add_picture(img_path, width=Inches(6.0))
+                        has_annotations = True
+                    except Exception:
+                        doc.add_paragraph(f"[Annotation: {fname}]")
+    if not has_annotations:
+        doc.add_paragraph("No annotated engineering layouts available.")
+
+    doc.save(output_filepath)
+
+    if drive_manager and drive_reports_folder_id:
+        try:
+            drive_manager.upload_file(output_filepath, drive_reports_folder_id)
+        except Exception:
+            pass
+
+    return output_filepath
