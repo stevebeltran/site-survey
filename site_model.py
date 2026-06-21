@@ -6,6 +6,7 @@ stable serialization across report templates and API consumers.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Optional, List
 
@@ -465,3 +466,159 @@ class SiteScores:
             safety_score=data.get("SAFETY_SCORE"),
             overall_score=data.get("OVERALL_SCORE"),
         )
+
+
+# ---------------------------------------------------------------------------
+# Photo categorization helpers
+# ---------------------------------------------------------------------------
+
+PHOTO_CATEGORY_KEYWORDS = {
+    "Site": ["front", "rear", "overview", "building", "panorama", "360"],
+    "Installation": ["dock", "proposed", "north_view", "south_view", "east_view", "west_view"],
+    "Infrastructure": ["panel", "breaker", "network", "closet", "switch", "demarc"],
+    "RF": ["antenna", "rf", "radio", "transmit"],
+    "Access": ["hatch", "ladder", "stair", "elevator", "gate", "access"],
+}
+
+
+def categorize_photo_by_filename(filename: str) -> str:
+    lower = filename.lower()
+    for category, keywords in PHOTO_CATEGORY_KEYWORDS.items():
+        if any(kw in lower for kw in keywords):
+            return category
+    return "Site"
+
+
+# ---------------------------------------------------------------------------
+# CandidateSite
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CandidateSite:
+    """Top-level model representing one candidate DFR deployment site."""
+
+    identity: SiteIdentity
+    installation: InstallInfo = field(default_factory=InstallInfo)
+    access: AccessInfo = field(default_factory=AccessInfo)
+    structure: StructuralInfo = field(default_factory=StructuralInfo)
+    dock: DockLocation = field(default_factory=DockLocation)
+    electrical: ElectricalInfo = field(default_factory=ElectricalInfo)
+    network: NetworkInfo = field(default_factory=NetworkInfo)
+    rf: RFInfo = field(default_factory=RFInfo)
+    flight: FlightOps = field(default_factory=FlightOps)
+    scores: SiteScores = field(default_factory=SiteScores)
+    photos: List[SurveyPhoto] = field(default_factory=list)
+    checklist_provenance: dict = field(default_factory=dict)
+
+    def to_json(self) -> dict:
+        return {
+            "identity": self.identity.to_json(),
+            "installation": self.installation.to_json(),
+            "access": self.access.to_json(),
+            "structure": self.structure.to_json(),
+            "dock": self.dock.to_json(),
+            "electrical": self.electrical.to_json(),
+            "network": self.network.to_json(),
+            "rf": self.rf.to_json(),
+            "flight": self.flight.to_json(),
+            "scores": self.scores.to_json(),
+            "photos": [p.to_json() for p in self.photos],
+            "checklist_provenance": dict(self.checklist_provenance),
+        }
+
+    @classmethod
+    def from_json(cls, data: dict) -> CandidateSite:
+        return cls(
+            identity=SiteIdentity.from_json(data["identity"]),
+            installation=InstallInfo.from_json(data.get("installation") or {}),
+            access=AccessInfo.from_json(data.get("access") or {}),
+            structure=StructuralInfo.from_json(data.get("structure") or {}),
+            dock=DockLocation.from_json(data.get("dock") or {}),
+            electrical=ElectricalInfo.from_json(data.get("electrical") or {}),
+            network=NetworkInfo.from_json(data.get("network") or {}),
+            rf=RFInfo.from_json(data.get("rf") or {}),
+            flight=FlightOps.from_json(data.get("flight") or {}),
+            scores=SiteScores.from_json(data.get("scores") or {}),
+            photos=[SurveyPhoto.from_json(p) for p in (data.get("photos") or [])],
+            checklist_provenance=dict(data.get("checklist_provenance") or {}),
+        )
+
+    @classmethod
+    def from_site_dict(cls, data: dict) -> CandidateSite:
+        """Convert a legacy processor.py site dict to a CandidateSite."""
+        site_name = data.get("city") or data.get("address") or ""
+        identity = SiteIdentity(
+            site_name=site_name,
+            site_id=data.get("site_id", ""),
+            agency_name=data.get("agency_name", ""),
+            site_address=data.get("address", ""),
+            site_latitude=data.get("latitude", 0.0),
+            site_longitude=data.get("longitude", 0.0),
+        )
+
+        photos: List[SurveyPhoto] = []
+        for idx, img in enumerate(data.get("images") or []):
+            file_path = img.get("dest_path") or img.get("path", "")
+            filename = img.get("filename") or os.path.basename(file_path)
+            category = categorize_photo_by_filename(filename)
+            raw_time = img.get("time", "")
+            photo_date: Optional[str] = None
+            photo_time: Optional[str] = None
+            if raw_time:
+                parts = str(raw_time).split(" ", 1)
+                photo_date = parts[0] if parts else None
+                photo_time = parts[1] if len(parts) > 1 else None
+            photos.append(SurveyPhoto(
+                photo_id=f"IMG_{idx + 1:03d}",
+                file_path=file_path,
+                category=category,
+                photo_date=photo_date,
+                photo_time=photo_time,
+                gps_latitude=img.get("lat"),
+                gps_longitude=img.get("lon"),
+            ))
+
+        site = cls(identity=identity, photos=photos)
+
+        # Carry forward analysis dict fields
+        analysis = data.get("analysis") or {}
+        if analysis.get("roof_access"):
+            site.access.roof_access = analysis["roof_access"]
+        if analysis.get("roof_type"):
+            site.structure.roof_type = analysis["roof_type"]
+
+        # Carry forward airspace dict
+        airspace = data.get("airspace") or {}
+        if airspace.get("designator"):
+            site.flight.airspace_class = airspace["designator"]
+
+        # Carry forward airfield_info dict
+        airfield_info = data.get("airfield_info") or {}
+        if airfield_info.get("name"):
+            site.flight.nearby_airports = airfield_info["name"]
+
+        return site
+
+    def to_csv_row(self) -> dict:
+        """Flatten all sub-models into a single dict suitable for CSV export."""
+        row: dict = {}
+        row.update(self.identity.to_json())
+        row.update(self.installation.to_json())
+        row.update(self.access.to_json())
+        row.update(self.structure.to_json())
+        row.update(self.dock.to_json())
+        row.update(self.electrical.to_json())
+        row.update(self.network.to_json())
+        row.update(self.rf.to_json())
+        row.update(self.flight.to_json())
+        row.update(self.scores.to_json())
+        return row
+
+    def compute_scores(self) -> None:
+        """Placeholder — scoring logic to be implemented by future scoring engine."""
+        pass
+
+    @staticmethod
+    def rank_sites(sites: list) -> list:
+        """Return sites in ranked order (placeholder — no-op sort)."""
+        return list(sites)

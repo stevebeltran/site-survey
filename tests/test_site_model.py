@@ -2,10 +2,13 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
+import json
+import csv
+import io
 from site_model import (
     SurveyPhoto, SiteIdentity, InstallInfo, AccessInfo,
     StructuralInfo, DockLocation, ElectricalInfo, NetworkInfo,
-    RFInfo, FlightOps, SiteScores,
+    RFInfo, FlightOps, SiteScores, CandidateSite,
 )
 
 
@@ -85,3 +88,97 @@ class TestNetworkInfo:
         restored = NetworkInfo.from_json(data)
         assert restored.isp_provider == "Comcast"
         assert restored.upload_speed == "50 Mbps"
+
+
+class TestCandidateSite:
+    def _make_site(self, site_id="CPD_20260621_1", name="Police HQ"):
+        return CandidateSite(
+            identity=SiteIdentity(
+                site_name=name, site_id=site_id, agency_name="Chicago PD",
+                site_address="1412 S Blue Island Ave", site_latitude=41.862644,
+                site_longitude=-87.661244, site_elevation=180.0,
+                survey_date="2026-06-21", surveyor="Steven Beltran",
+            ),
+            photos=[
+                SurveyPhoto(photo_id="IMG_001", file_path="/path/001.jpg",
+                            category="Site", gps_latitude=41.862644, gps_longitude=-87.661244),
+            ],
+        )
+
+    def test_create_with_defaults(self):
+        site = self._make_site()
+        assert site.identity.site_name == "Police HQ"
+        assert site.installation.install_type is None
+        assert site.electrical.power_available is None
+        assert site.scores.overall_score is None
+        assert len(site.photos) == 1
+
+    def test_to_json_roundtrip(self):
+        site = self._make_site()
+        site.electrical.power_available = True
+        site.checklist_provenance["POWER_AVAILABLE"] = "pm"
+        data = site.to_json()
+        restored = CandidateSite.from_json(data)
+        assert restored.identity.site_id == "CPD_20260621_1"
+        assert restored.electrical.power_available is True
+        assert restored.checklist_provenance["POWER_AVAILABLE"] == "pm"
+        assert len(restored.photos) == 1
+
+    def test_to_csv_row_flat_dict(self):
+        site = self._make_site()
+        site.electrical.power_available = True
+        row = site.to_csv_row()
+        assert row["SITE_NAME"] == "Police HQ"
+        assert row["SITE_ID"] == "CPD_20260621_1"
+        assert row["POWER_AVAILABLE"] is True
+        assert row["SITE_LATITUDE"] == 41.862644
+
+    def test_to_json_string(self):
+        site = self._make_site()
+        json_str = json.dumps(site.to_json(), indent=2)
+        parsed = json.loads(json_str)
+        assert parsed["identity"]["SITE_NAME"] == "Police HQ"
+
+
+class TestFromSiteDict:
+    def test_convert_legacy_site_dict(self):
+        legacy = {
+            "site_id": "SITE-001",
+            "folder_name": "Site_1_Chicago_1412_S_Blue_Island",
+            "folder_path": "/output/Site_1",
+            "batch_folder_path": "/output",
+            "address": "1412 S Blue Island Ave, Chicago, Cook County, Illinois, US",
+            "city": "Chicago",
+            "agency_name": "Chicago Police Department",
+            "latitude": 41.862644,
+            "longitude": -87.661244,
+            "images": [
+                {
+                    "path": "/raw/001.jpg",
+                    "filename": "building_front.jpg",
+                    "lat": 41.862644,
+                    "lon": -87.661244,
+                    "time": "2026-06-21 14:30:00",
+                    "dest_path": "/output/Site_1/building_front.jpg",
+                },
+            ],
+        }
+        site = CandidateSite.from_site_dict(legacy)
+        assert site.identity.site_name == "Chicago"
+        assert site.identity.agency_name == "Chicago Police Department"
+        assert site.identity.site_latitude == 41.862644
+        assert len(site.photos) == 1
+        assert site.photos[0].file_path == "/output/Site_1/building_front.jpg"
+
+    def test_missing_optional_fields(self):
+        legacy = {
+            "site_id": "SITE-002",
+            "address": "Unknown",
+            "latitude": 40.0,
+            "longitude": -88.0,
+            "images": [],
+        }
+        site = CandidateSite.from_site_dict(legacy)
+        assert site.identity.site_name == "Unknown"
+        assert site.identity.agency_name == ""
+        assert site.photos == []
