@@ -2,6 +2,8 @@ import os
 import shutil
 import datetime
 
+from site_model import CandidateSite, SiteIdentity, SurveyPhoto, categorize_photo_by_filename
+
 try:
     import exifread
 except Exception:
@@ -213,6 +215,77 @@ def cluster_images_dbscan(images_meta, eps_meters=90.0, min_samples=1):
             clusters_dict.setdefault(label, []).append(img)
 
     return list(clusters_dict.values())
+
+
+def cluster_to_candidate_sites(clusters, agency_name="", survey_date=None):
+    """Convert cluster output into a list of CandidateSite objects.
+
+    Args:
+        clusters: list of lists of image meta dicts.
+        agency_name: agency name to set on all sites.
+        survey_date: survey date string (YYYY-MM-DD). Defaults to today.
+
+    Returns:
+        list[CandidateSite]
+    """
+    from datetime import datetime as _dt
+    if survey_date is None:
+        survey_date = _dt.now().strftime("%Y-%m-%d")
+
+    sites = []
+    for idx, cluster in enumerate(clusters, start=1):
+        if not cluster:
+            continue
+
+        lats = [m["lat"] for m in cluster if m.get("lat") is not None]
+        lons = [m["lon"] for m in cluster if m.get("lon") is not None]
+        center_lat = sum(lats) / len(lats) if lats else 0.0
+        center_lon = sum(lons) / len(lons) if lons else 0.0
+
+        addr = ""
+        city = ""
+        try:
+            result = reverse_geocode(center_lat, center_lon)
+            if result:
+                addr = result
+                city = extract_city_from_address(result)
+        except Exception:
+            pass
+
+        site_name = city if city else f"Site {idx}"
+        safe_agency = agency_name.replace(" ", "_") if agency_name else "Survey"
+        site_id = f"{safe_agency}_{survey_date.replace('-', '')}_{idx}"
+
+        identity = SiteIdentity(
+            site_name=site_name,
+            site_id=site_id,
+            agency_name=agency_name,
+            site_address=addr,
+            site_latitude=center_lat,
+            site_longitude=center_lon,
+            survey_date=survey_date,
+        )
+
+        photos = []
+        for img in cluster:
+            filename = img.get("filename", os.path.basename(img.get("path", "")))
+            file_path = img.get("dest_path", img.get("path", ""))
+            time_str = str(img.get("time", "")) if img.get("time") else ""
+            photo = SurveyPhoto(
+                photo_id=filename,
+                file_path=file_path,
+                category=categorize_photo_by_filename(filename),
+                gps_latitude=img.get("lat"),
+                gps_longitude=img.get("lon"),
+                photo_date=time_str.split(" ")[0] if time_str else None,
+                photo_time=time_str.split(" ")[1] if " " in time_str else None,
+            )
+            photos.append(photo)
+
+        sites.append(CandidateSite(identity=identity, photos=photos))
+
+    return sites
+
 
 def extract_city_from_address(full_address):
     """

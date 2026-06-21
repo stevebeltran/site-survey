@@ -3,6 +3,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 from processor import cluster_images_dbscan
+from site_model import CandidateSite
 
 
 class TestDBSCANClustering:
@@ -49,3 +50,30 @@ class TestDBSCANClustering:
         clusters = cluster_images_dbscan(images)
         total_images = sum(len(c) for c in clusters)
         assert total_images == 1
+
+
+class TestProcessorCandidateSiteOutput:
+    def test_cluster_to_candidate_sites(self):
+        from processor import cluster_to_candidate_sites
+        clusters = [
+            [
+                {"path": "/img/a1.jpg", "filename": "building_front.jpg",
+                 "lat": 41.862644, "lon": -87.661244, "time": "2026-06-21 14:30:00",
+                 "dest_path": "/out/a1.jpg"},
+                {"path": "/img/a2.jpg", "filename": "roof_overview.jpg",
+                 "lat": 41.862650, "lon": -87.661250, "time": "2026-06-21 14:31:00",
+                 "dest_path": "/out/a2.jpg"},
+            ],
+            [
+                {"path": "/img/b1.jpg", "filename": "antenna_north.jpg",
+                 "lat": 41.867000, "lon": -87.665000, "time": "2026-06-21 15:00:00",
+                 "dest_path": "/out/b1.jpg"},
+            ],
+        ]
+        sites = cluster_to_candidate_sites(clusters, agency_name="Chicago PD")
+        assert len(sites) == 2
+        assert isinstance(sites[0], CandidateSite)
+        assert sites[0].identity.agency_name == "Chicago PD"
+        assert len(sites[0].photos) == 2
+        assert sites[0].photos[0].category == "Site"   # "building_front" -> Site
+        assert sites[1].photos[0].category == "RF"     # "antenna_north" -> RF
