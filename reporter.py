@@ -8,6 +8,25 @@ from geopy.distance import geodesic
 from PIL import Image, ImageDraw, ImageFont
 
 
+def _load_font(bold=False, size=28):
+    """Load a TrueType font, trying Windows Arial first then Linux DejaVu."""
+    candidates = (
+        ["arialbd.ttf", "Arial Bold.ttf"] if bold
+        else ["arial.ttf", "Arial.ttf"]
+    ) + [
+        # Linux / Streamlit Cloud paths
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
+        else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+    ]
+    for name in candidates:
+        try:
+            return ImageFont.truetype(name, size)
+        except (OSError, IOError):
+            continue
+    return ImageFont.load_default()
+
+
 def _format_short_address(full_address):
     """Shorten a Nominatim address to just street, city, state zip."""
     if not full_address:
@@ -309,18 +328,11 @@ def create_engineering_drawing(bg_path, output_path, markers, engineer_note, add
     draw = ImageDraw.Draw(canvas)
     
     # Initialize fonts (must be done before any text rendering below)
-    try:
-        font_bubble = ImageFont.truetype("arialbd.ttf", 28)
-        font_legend = ImageFont.truetype("arialbd.ttf", 26)
-        font_title = ImageFont.truetype("arialbd.ttf", 22)
-        font_small = ImageFont.truetype("arial.ttf", 14)
-        font_note = ImageFont.truetype("arial.ttf", 16)
-    except:
-        font_bubble = None
-        font_legend = None
-        font_title = None
-        font_small = None
-        font_note = None
+    font_bubble = _load_font(bold=True, size=28)
+    font_legend = _load_font(bold=True, size=26)
+    font_title = _load_font(bold=True, size=22)
+    font_small = _load_font(bold=False, size=14)
+    font_note = _load_font(bold=False, size=16)
 
     # Draw background image
     if os.path.exists(bg_path):
@@ -447,13 +459,9 @@ def create_engineering_drawing(bg_path, output_path, markers, engineer_note, add
         border_color = color_map.get(m_type, '#EF4444')
 
         # Measure actual text size for accurate bubble dimensions
-        if font_bubble:
-            bbox = draw.textbbox((0, 0), label_text, font=font_bubble)
-            text_w = bbox[2] - bbox[0]
-            text_h = bbox[3] - bbox[1]
-        else:
-            text_w = len(label_text) * 14
-            text_h = 30
+        bbox = draw.textbbox((0, 0), label_text, font=font_bubble)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
 
         pad_x, pad_y = 14, 14
         bubble_w = text_w + pad_x * 2
