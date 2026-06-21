@@ -177,6 +177,43 @@ def cluster_images(images_meta, radius_meters=90.0):
 
     return clusters
 
+def cluster_images_dbscan(images_meta, eps_meters=90.0, min_samples=1):
+    """Cluster images by GPS proximity using DBSCAN.
+
+    Args:
+        images_meta: list of dicts with 'path', 'lat', 'lon', 'time' keys.
+        eps_meters: maximum distance in meters between points in same cluster.
+        min_samples: minimum images to form a cluster (default 1 = no noise).
+
+    Returns:
+        list of lists, each inner list is a cluster of image meta dicts.
+    """
+    if not images_meta:
+        return []
+
+    gps_images = [m for m in images_meta if m.get("lat") is not None and m.get("lon") is not None]
+    if not gps_images:
+        return []
+
+    import numpy as np
+    from sklearn.cluster import DBSCAN
+
+    coords_rad = np.array([[np.radians(m["lat"]), np.radians(m["lon"])] for m in gps_images])
+    eps_rad = eps_meters / 6371000.0
+
+    db = DBSCAN(eps=eps_rad, min_samples=min_samples, metric="haversine")
+    labels = db.fit_predict(coords_rad)
+
+    clusters_dict = {}
+    for img, label in zip(gps_images, labels):
+        if label == -1:
+            noise_key = f"noise_{id(img)}"
+            clusters_dict[noise_key] = [img]
+        else:
+            clusters_dict.setdefault(label, []).append(img)
+
+    return list(clusters_dict.values())
+
 def extract_city_from_address(full_address):
     """
     Extract city/town name from a reverse-geocoded full address.
