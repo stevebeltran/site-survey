@@ -29,6 +29,9 @@ from streamlit_folium import st_folium
 import processor
 import analyzer
 import reporter
+from site_model import CandidateSite, export_sites_json, export_sites_csv
+from processor import cluster_images_dbscan, cluster_to_candidate_sites
+from analyzer import enrich_gis
 
 # Import the image coordinates package
 try:
@@ -127,6 +130,10 @@ if "client_name" not in st.session_state:
     st.session_state.client_name = None
 if "image_paths" not in st.session_state:
     st.session_state.image_paths = []
+if "drive_folder_url" not in st.session_state:
+    st.session_state.drive_folder_url = None
+if "candidate_sites" not in st.session_state:
+    st.session_state.candidate_sites = []
 
 SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tiff", ".webp", ".heic", ".heif")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -305,6 +312,9 @@ with st.sidebar:
     else:
         google_oauth.render_connect_button()
 
+    st.divider()
+    st.caption("[Privacy Policy](/Privacy_Policy) · [Terms of Service](/Terms_of_Service)")
+
 # Ingestion Controls
 # Get Drive manager once up front (returns None if not authenticated)
 drive = get_drive_manager()
@@ -315,10 +325,18 @@ def _on_files_changed():
     st.session_state.pop("gps_detected_agency", None)
     st.session_state.pop("_auto_processed", None)
     st.session_state.pop("city_boundary_geojson", None)
+    st.session_state.pop("candidate_sites", None)
 
 # Collapse the uploader once sites have been processed
 _has_sites = bool(st.session_state.get("processed_sites"))
 with st.expander("📤 Upload Survey Photos", expanded=not _has_sites):
+    clustering_method = st.selectbox(
+        "Clustering Method",
+        ["Radius (90m)", "DBSCAN (auto)"],
+        index=0,
+        key="clustering_method",
+        help="Radius: groups photos within 90m. DBSCAN: auto-detects clusters by density.",
+    )
     uploaded_files = st.file_uploader(
         "Upload raw survey photos (.jpg, .jpeg, .png)",
         accept_multiple_files=True,
@@ -366,60 +384,8 @@ with st.expander("📤 Upload Survey Photos", expanded=not _has_sites):
             else:
                 st.warning("Connect your Google account to search Gmail for contacts.")
 
-        # Upload to Drive button (remains manual)
-        col_drive_btn, col_spacer = st.columns([1, 2])
-        with col_drive_btn:
-            if google_oauth.is_authenticated():
-                upload_clicked = st.button("📤 Upload to Drive", use_container_width=True)
-            else:
-                upload_clicked = False
-                google_oauth.render_connect_button("Connect Google to Upload")
     else:
         client_name = "Untitled_Site_Survey"
-        upload_clicked = False
-
-# Handle Upload to Drive button
-uploaded_file_paths = []
-if upload_clicked and uploaded_files:
-    if not drive:
-        st.error("Google Drive not available. Please connect your Google account.")
-        st.stop()
-    if not team_folder_id:
-        st.error("GOOGLE_DRIVE_TEAM_FOLDER_ID not set in Streamlit secrets.")
-        st.stop()
-
-    with st.spinner("Creating folder structure and uploading images..."):
-        try:
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            client_folder_name = f"{client_name}_{timestamp}"
-            client_folder_id = drive.get_or_create_folder(team_folder_id, client_folder_name)
-
-            raw_images_folder_id = drive.get_or_create_folder(client_folder_id, "01_Raw_Images")
-            processed_folder_id = drive.get_or_create_folder(client_folder_id, "02_Processed_Sites")
-            reports_folder_id = drive.get_or_create_folder(client_folder_id, "03_Reports")
-            metadata_folder_id = drive.get_or_create_folder(client_folder_id, "04_Metadata")
-
-            progress_bar = st.progress(0)
-            for idx, uploaded_file in enumerate(uploaded_files):
-                temp_path = f"/tmp/{uploaded_file.name}"
-                with open(temp_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-
-                drive.upload_file(temp_path, raw_images_folder_id)
-                uploaded_file_paths.append(temp_path)
-                progress_bar.progress((idx + 1) / len(uploaded_files))
-
-            st.success(f"Uploaded {len(uploaded_files)} images to Google Drive!")
-            st.session_state.client_folder_id = client_folder_id
-            st.session_state.raw_images_folder_id = raw_images_folder_id
-            st.session_state.processed_folder_id = processed_folder_id
-            st.session_state.reports_folder_id = reports_folder_id
-            st.session_state.metadata_folder_id = metadata_folder_id
-            st.session_state.client_name = client_name
-            st.session_state.image_paths = uploaded_file_paths
-
-        except Exception as e:
-            st.error(f"Failed to upload to Google Drive: {e}")
 
 # Auto-process on upload — runs once per file set, no manual button needed
 if uploaded_files and not st.session_state.get("_auto_processed"):
@@ -497,12 +463,184 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
             }
             _save_session_metadata(site_data)
 
+        # Convert to CandidateSite objects
+        st.session_state.candidate_sites = []
+        if site_data:
+            if st.session_state.get("clustering_method") == "DBSCAN (auto)":
+                all_images = []
+                for site in site_data:
+                    all_images.extend(site.get("images", []))
+                clusters = cluster_images_dbscan(all_images)
+                st.session_state.candidate_sites = cluster_to_candidate_sites(
+                    clusters, agency_name=st.session_state.customer_info.get("agency_name", "")
+                )
+            else:
+                st.session_state.candidate_sites = [
+                    CandidateSite.from_site_dict(s) for s in site_data
+                ]
+            for cs in st.session_state.candidate_sites:
+                enrich_gis(cs)
+
         st.rerun()
     except Exception as e:
         st.error(f"Processing failed: {e}")
     finally:
         progress_bar.empty()
         progress_text.empty()
+
+def _render_site_checklist(site, site_idx):
+    """Render a unified checklist card for a CandidateSite."""
+    prov = site.checklist_provenance
+
+    def _indicator(field_id):
+        if prov.get(field_id) == "auto":
+            return "✅"
+        return "⚠️"
+
+    with st.expander(f"📋 Site {site_idx}: {site.identity.site_name} — {site.identity.site_address}", expanded=False):
+        st.markdown(f"**Site ID:** {site.identity.site_id}")
+        st.markdown(f"**Coordinates:** {site.identity.site_latitude:.6f}, {site.identity.site_longitude:.6f}")
+        if site.identity.site_elevation:
+            st.markdown(f"**Elevation:** {site.identity.site_elevation:.1f} ft {_indicator('SITE_ELEVATION')}")
+
+        st.markdown("---")
+
+        # Access
+        st.markdown("#### Access")
+        col1, col2 = st.columns(2)
+        with col1:
+            site.access.access_type = st.selectbox(
+                "Access Type", ["", "Stairs", "Ladder", "Elevator", "Roof Hatch"],
+                index=0, key=f"access_type_{site_idx}")
+            site.access.escort_required = st.checkbox(
+                "Escort Required", value=bool(site.access.escort_required),
+                key=f"escort_{site_idx}")
+            site.access.key_required = st.checkbox(
+                "Key Required", value=bool(site.access.key_required),
+                key=f"key_{site_idx}")
+        with col2:
+            site.access.roof_access = st.selectbox(
+                "Roof Access", ["", "Roof Hatch", "Exterior Ladder", "Interior Stairs", "Elevator"],
+                index=0, key=f"roof_access_{site_idx}")
+            site.access.after_hours_access = st.checkbox(
+                "After Hours Access", value=bool(site.access.after_hours_access),
+                key=f"after_hours_{site_idx}")
+            site.access.parking_available = st.checkbox(
+                "Parking Available", value=bool(site.access.parking_available),
+                key=f"parking_{site_idx}")
+
+        st.markdown("---")
+
+        # Structural
+        st.markdown("#### Structural")
+        col1, col2 = st.columns(2)
+        with col1:
+            site.structure.building_height = st.number_input(
+                f"Building Height (ft) {_indicator('BUILDING_HEIGHT')}",
+                value=float(site.structure.building_height or 0),
+                min_value=0.0, step=1.0, key=f"bldg_height_{site_idx}")
+            site.structure.roof_type = st.selectbox(
+                "Roof Type",
+                ["", "Flat Concrete", "EPDM / Rubber Membrane", "TPO / Single-ply Vinyl",
+                 "Standing Seam Metal", "Tar and Gravel", "Pitched / Shingle"],
+                index=0, key=f"roof_type_{site_idx}")
+        with col2:
+            site.structure.parapet_height = st.number_input(
+                "Parapet Height (ft)", value=float(site.structure.parapet_height or 0),
+                min_value=0.0, step=0.5, key=f"parapet_{site_idx}")
+            site.structure.roof_condition = st.selectbox(
+                "Roof Condition", ["", "Good", "Fair", "Poor"],
+                index=0, key=f"roof_cond_{site_idx}")
+
+        st.markdown("---")
+
+        # Electrical
+        st.markdown("#### Electrical")
+        col1, col2 = st.columns(2)
+        with col1:
+            site.electrical.power_available = st.checkbox(
+                "Power Available", value=bool(site.electrical.power_available),
+                key=f"power_{site_idx}")
+            site.electrical.voltage_available = st.selectbox(
+                "Voltage", ["", "120V", "208V", "240V", "480V"],
+                index=0, key=f"voltage_{site_idx}")
+            site.electrical.dedicated_circuit = st.checkbox(
+                "Dedicated Circuit", value=bool(site.electrical.dedicated_circuit),
+                key=f"ded_circuit_{site_idx}")
+        with col2:
+            site.electrical.breaker_available = st.checkbox(
+                "Breaker Available", value=bool(site.electrical.breaker_available),
+                key=f"breaker_{site_idx}")
+            site.electrical.panel_location = st.text_input(
+                "Panel Location", value=site.electrical.panel_location or "",
+                key=f"panel_loc_{site_idx}")
+            site.electrical.distance_to_power = st.number_input(
+                "Distance to Power (ft)", value=float(site.electrical.distance_to_power or 0),
+                min_value=0.0, step=1.0, key=f"dist_power_{site_idx}")
+
+        st.markdown("---")
+
+        # Network
+        st.markdown("#### Network")
+        col1, col2 = st.columns(2)
+        with col1:
+            site.network.isp_provider = st.text_input(
+                "ISP Provider", value=site.network.isp_provider or "",
+                key=f"isp_{site_idx}")
+            site.network.download_speed = st.text_input(
+                "Download Speed", value=site.network.download_speed or "",
+                key=f"dl_speed_{site_idx}")
+            site.network.static_ip_available = st.checkbox(
+                "Static IP Available", value=bool(site.network.static_ip_available),
+                key=f"static_ip_{site_idx}")
+        with col2:
+            site.network.connection_type = st.selectbox(
+                "Connection Type", ["", "Fiber", "Cable", "DSL", "Cellular", "Satellite"],
+                index=0, key=f"conn_type_{site_idx}")
+            site.network.upload_speed = st.text_input(
+                "Upload Speed", value=site.network.upload_speed or "",
+                key=f"ul_speed_{site_idx}")
+            site.network.switch_location = st.text_input(
+                "Switch Location", value=site.network.switch_location or "",
+                key=f"switch_loc_{site_idx}")
+
+        st.markdown("---")
+
+        # RF
+        st.markdown("#### RF")
+        col1, col2 = st.columns(2)
+        with col1:
+            site.rf.line_of_sight_status = st.selectbox(
+                "Line of Sight", ["", "Clear", "Partial", "Obstructed"],
+                index=0, key=f"los_{site_idx}")
+            site.rf.obstruction_trees = st.checkbox("Trees", key=f"obs_trees_{site_idx}")
+            site.rf.obstruction_buildings = st.checkbox("Buildings", key=f"obs_bldg_{site_idx}")
+        with col2:
+            site.rf.coverage_direction = st.text_input(
+                "Coverage Direction", value=site.rf.coverage_direction or "",
+                key=f"coverage_dir_{site_idx}")
+            site.rf.obstruction_water_towers = st.checkbox("Water Towers", key=f"obs_water_{site_idx}")
+            site.rf.obstruction_cell_towers = st.checkbox("Cell Towers", key=f"obs_cell_{site_idx}")
+
+        st.markdown("---")
+
+        # Flight / Airspace
+        st.markdown(f"#### Airspace {_indicator('AIRSPACE_CLASS')}")
+        col1, col2 = st.columns(2)
+        with col1:
+            site.flight.airspace_class = st.text_input(
+                "Airspace Class", value=site.flight.airspace_class or "",
+                key=f"airspace_{site_idx}")
+            st.text(f"Nearby Airports: {site.flight.nearby_airports or '—'}")
+            st.text(f"Nearby Heliports: {site.flight.nearby_heliports or '—'}")
+        with col2:
+            site.flight.launch_direction = st.text_input(
+                "Launch Direction", value=site.flight.launch_direction or "",
+                key=f"launch_dir_{site_idx}")
+            site.flight.emergency_landing_zone = st.text_input(
+                "Emergency Landing Zone", value=site.flight.emergency_landing_zone or "",
+                key=f"elz_{site_idx}")
+
 
 # Layout Columns
 tab1, tab2, tab3 = st.tabs(["📋 Survey Pipeline", "🔗 Workflow Sync", "📈 Analytics & Logs"])
@@ -675,7 +813,12 @@ with tab1:
                 st.markdown(f"**{site['site_id']}: {site['address'].split(',')[0]}**")
                 st.caption(f"Coordinates: {site['latitude']:.4f}, {site['longitude']:.4f}")
                 st.caption(f"Airspace: `{site['airspace']}`")
-                
+
+            # Clickable link to the Google Drive working directory
+            if st.session_state.get("drive_folder_url"):
+                st.divider()
+                st.markdown(f"[📂 Open in Google Drive]({st.session_state.drive_folder_url})")
+
     with col2:
         st.subheader("Site Detail & Map Visualisation")
         if st.session_state.processed_sites:
@@ -1081,10 +1224,22 @@ with tab1:
             else:
                 st.warning("Please upload or process images first to mark up.")
                 
-            # Report generation button
-            st.subheader("Report Generation")
+            # ── Candidate Site Checklists ──
+            if st.session_state.candidate_sites:
+                st.markdown("---")
+                st.subheader("Site Assessment Checklists")
+                for i, csite in enumerate(st.session_state.candidate_sites, start=1):
+                    _render_site_checklist(csite, i)
+
+            # Report generation & Drive upload — single combined action
+            st.subheader("Report Generation & Upload")
             report_name = st.text_input("Master Document Name", value="Master_DFR_Site_Survey_Report.docx")
-            if st.button("📄 Build Word Document", use_container_width=True):
+            use_new_report = st.checkbox(
+                "Use enhanced multi-site report format",
+                value=True,
+                key="use_new_report",
+            )
+            if st.button("📄 Build Report & Upload to Drive", use_container_width=True):
                 try:
                     # Update metadata save
                     _save_session_metadata(st.session_state.processed_sites)
@@ -1099,21 +1254,99 @@ with tab1:
                     report_path = os.path.join(report_subfolder, report_name)
 
                     # Get Drive manager for report upload
-                    drive = None
+                    report_drive = None
                     try:
-                        drive = get_drive_manager()
+                        report_drive = get_drive_manager()
                     except Exception:
                         pass
 
-                    reporter.generate_word_report(
-                        st.session_state.processed_sites,
-                        report_path,
-                        customer_info=st.session_state.customer_info,
-                        drive_manager=drive,
-                        drive_reports_folder_id=st.session_state.get('reports_folder_id')
-                    )
-                    st.success(f"Generated Word Document at `{report_path}`!")
+                    # Upload raw images to Drive if authenticated and not yet uploaded
+                    if report_drive and uploaded_files and not st.session_state.get("client_folder_id"):
+                        with st.spinner("Creating folder structure and uploading images to Drive..."):
+                            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                            agency = st.session_state.customer_info.get("agency_name", client_name)
+                            client_folder_name = f"{agency.replace(' ', '_')}_{timestamp}"
+                            client_fid = report_drive.get_or_create_folder(team_folder_id, client_folder_name)
+
+                            raw_fid = report_drive.get_or_create_folder(client_fid, "01_Raw_Images")
+                            proc_fid = report_drive.get_or_create_folder(client_fid, "02_Processed_Sites")
+                            rep_fid = report_drive.get_or_create_folder(client_fid, "03_Reports")
+                            meta_fid = report_drive.get_or_create_folder(client_fid, "04_Metadata")
+
+                            progress_bar = st.progress(0)
+                            for idx, uploaded_file in enumerate(uploaded_files):
+                                temp_path = os.path.join(tempfile.gettempdir(), uploaded_file.name)
+                                with open(temp_path, "wb") as f:
+                                    f.write(uploaded_file.getbuffer())
+                                report_drive.upload_file(temp_path, raw_fid)
+                                progress_bar.progress((idx + 1) / len(uploaded_files))
+                            progress_bar.empty()
+
+                            st.session_state.client_folder_id = client_fid
+                            st.session_state.raw_images_folder_id = raw_fid
+                            st.session_state.processed_folder_id = proc_fid
+                            st.session_state.reports_folder_id = rep_fid
+                            st.session_state.metadata_folder_id = meta_fid
+                            st.session_state.client_name = agency
+                            st.session_state.drive_folder_url = f"https://drive.google.com/drive/folders/{client_fid}"
+                            st.success(f"Uploaded {len(uploaded_files)} images to Drive!")
+
+                    if use_new_report and st.session_state.candidate_sites:
+                        from reporter import generate_candidate_site_report
+                        generate_candidate_site_report(
+                            st.session_state.candidate_sites,
+                            report_path,
+                            customer_info=st.session_state.customer_info,
+                            drive_manager=report_drive,
+                            drive_reports_folder_id=st.session_state.get('reports_folder_id')
+                        )
+                    else:
+                        reporter.generate_word_report(
+                            st.session_state.processed_sites,
+                            report_path,
+                            customer_info=st.session_state.customer_info,
+                            drive_manager=report_drive,
+                            drive_reports_folder_id=st.session_state.get('reports_folder_id')
+                        )
+                    st.success(f"Generated report: `{report_path}`")
                     st.session_state.generated_report = report_path
+
+                    # Export buttons
+                    if st.session_state.candidate_sites:
+                        exp_col1, exp_col2, exp_col3 = st.columns(3)
+                        with exp_col1:
+                            json_path = os.path.join(report_subfolder, "survey_export.json")
+                            export_sites_json(st.session_state.candidate_sites, json_path)
+                            with open(json_path, "r") as jf:
+                                st.download_button("📥 Download JSON", jf.read(),
+                                    "survey_export.json", mime="application/json", key="json_save")
+                            if report_drive and st.session_state.get("metadata_folder_id"):
+                                try:
+                                    report_drive.upload_file(json_path, st.session_state.metadata_folder_id)
+                                except Exception:
+                                    pass
+                        with exp_col2:
+                            csv_path = os.path.join(report_subfolder, "survey_export.csv")
+                            export_sites_csv(st.session_state.candidate_sites, csv_path)
+                            with open(csv_path, "r") as cf:
+                                st.download_button("📥 Download CSV", cf.read(),
+                                    "survey_export.csv", mime="text/csv", key="csv_save")
+                            if report_drive and st.session_state.get("metadata_folder_id"):
+                                try:
+                                    report_drive.upload_file(csv_path, st.session_state.metadata_folder_id)
+                                except Exception:
+                                    pass
+                        with exp_col3:
+                            with open(report_path, "rb") as rf:
+                                st.download_button("📥 Download DOCX", rf.read(),
+                                    os.path.basename(report_path),
+                                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                    key="docx_save")
+
+                    # Update Drive folder URL if we have the folder ID
+                    if st.session_state.get("client_folder_id"):
+                        st.session_state.drive_folder_url = f"https://drive.google.com/drive/folders/{st.session_state.client_folder_id}"
+
                 except Exception as e:
                     st.error(f"Report generation error: {e}")
         else:
