@@ -5,6 +5,7 @@ import pytest
 import json
 import csv
 import io
+import tempfile
 from site_model import (
     SurveyPhoto, SiteIdentity, InstallInfo, AccessInfo,
     StructuralInfo, DockLocation, ElectricalInfo, NetworkInfo,
@@ -182,3 +183,70 @@ class TestFromSiteDict:
         assert site.identity.site_name == "Unknown"
         assert site.identity.agency_name == ""
         assert site.photos == []
+
+
+class TestExportJSON:
+    def test_export_single_site(self):
+        from site_model import export_sites_json
+        site = TestCandidateSite()._make_site()
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
+            output = f.name
+        try:
+            export_sites_json([site], output)
+            with open(output, "r") as f:
+                data = json.load(f)
+            assert isinstance(data, list)
+            assert len(data) == 1
+            assert data[0]["identity"]["SITE_NAME"] == "Police HQ"
+        finally:
+            os.unlink(output)
+
+    def test_export_multiple_sites(self):
+        from site_model import export_sites_json
+        s1 = TestCandidateSite()._make_site("ID1", "Site A")
+        s2 = TestCandidateSite()._make_site("ID2", "Site B")
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
+            output = f.name
+        try:
+            export_sites_json([s1, s2], output)
+            with open(output, "r") as f:
+                data = json.load(f)
+            assert len(data) == 2
+        finally:
+            os.unlink(output)
+
+
+class TestExportCSV:
+    def test_export_csv_headers(self):
+        from site_model import export_sites_csv
+        site = TestCandidateSite()._make_site()
+        site.electrical.power_available = True
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w", newline="") as f:
+            output = f.name
+        try:
+            export_sites_csv([site], output)
+            with open(output, "r") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+            assert len(rows) == 1
+            assert rows[0]["SITE_NAME"] == "Police HQ"
+            assert rows[0]["POWER_AVAILABLE"] == "True"
+        finally:
+            os.unlink(output)
+
+    def test_export_csv_multi_row(self):
+        from site_model import export_sites_csv
+        s1 = TestCandidateSite()._make_site("ID1", "Site A")
+        s2 = TestCandidateSite()._make_site("ID2", "Site B")
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w", newline="") as f:
+            output = f.name
+        try:
+            export_sites_csv([s1, s2], output)
+            with open(output, "r") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+            assert len(rows) == 2
+            assert rows[0]["SITE_ID"] == "ID1"
+            assert rows[1]["SITE_ID"] == "ID2"
+        finally:
+            os.unlink(output)

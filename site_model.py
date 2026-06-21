@@ -622,3 +622,32 @@ class CandidateSite:
     def rank_sites(sites: list) -> list:
         """Return sites in ranked order (placeholder — no-op sort)."""
         return list(sites)
+
+
+def export_sites_json(sites: list, output_path: str) -> str:
+    """Export a list of CandidateSite objects to a JSON file."""
+    import json
+    data = [site.to_json() for site in sites]
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, default=str)
+    return output_path
+
+
+def export_sites_csv(sites: list, output_path: str) -> str:
+    """Export a list of CandidateSite objects to a CSV file. One row per site."""
+    import csv
+    if not sites:
+        with open(output_path, "w", newline="", encoding="utf-8") as f:
+            f.write("")
+        return output_path
+
+    rows = [site.to_csv_row() for site in sites]
+    fieldnames = list(rows[0].keys())
+
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({k: str(v) if v is not None else "" for k, v in row.items()})
+
+    return output_path
