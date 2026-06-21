@@ -3,6 +3,11 @@ import json
 import base64
 import requests
 
+try:
+    import google.generativeai as genai
+except ImportError:
+    genai = None
+
 def analyze_image_heuristics(image_path):
     """
     Simulate computer vision analysis of site images.
@@ -165,3 +170,192 @@ def analyze_site(site_data_dict, api_key=None, api_url=None):
         "hardware": list(all_hardware),
         "individual_findings": findings
     }
+
+
+def estimate_building_height_gemini(image_path, api_key=None):
+    """Use Gemini Flash free tier to estimate building height from a photo.
+    Returns dict with 'floors' and 'estimated_height_ft', or None on failure."""
+    if genai is None:
+        return None
+
+    if api_key is None:
+        api_key = os.environ.get("GOOGLE_GEMINI_API_KEY", "")
+        if not api_key:
+            try:
+                import streamlit as st
+                api_key = st.secrets.get("GOOGLE_GEMINI_API_KEY", "")
+            except Exception:
+                pass
+
+    try:
+        genai.configure(api_key=api_key or "")
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        try:
+            import PIL.Image
+            image_input = PIL.Image.open(image_path)
+        except Exception:
+            image_input = image_path
+        response = model.generate_content([
+            image_input,
+            "How many floors does this building have? Estimate the building "
+            "height in feet. Return ONLY valid JSON: "
+            '{"floors": <int>, "estimated_height_ft": <int>}',
+        ])
+        text = response.text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+def enrich_gis(site, skip_nominatim=False):
+    """Enrich a CandidateSite with free GIS data.
+    Populates: county, state, zip, elevation, airport/heliport distances, building height.
+    Gracefully degrades — any API failure leaves the field as None."""
+    lat = site.identity.site_latitude
+    lon = site.identity.site_longitude
+    if lat is None or lon is None:
+        return
+
+    # ── Nominatim reverse geocode ──
+    if not skip_nominatim:
+        try:
+            resp = requests.get(
+                "https://nominatim.openstreetmap.org/reverse",
+                params={"lat": lat, "lon": lon, "format": "json", "addressdetails": 1},
+                headers={"User-Agent": "BRINC-DFR-SiteSurvey/1.0"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                addr = resp.json().get("address", {})
+                county = addr.get("county", "")
+                state = addr.get("state", "")
+                postcode = addr.get("postcode", "")
+                city = addr.get("city") or addr.get("town") or addr.get("village", "")
+                if site.identity.site_address in ("", "Unknown", None):
+                    parts = [p for p in [city, county, state, postcode] if p]
+                    site.identity.site_address = ", ".join(parts)
+                site.identity.county = county
+                site.identity.state = state
+                site.identity.zip_code = postcode
+                site.identity.jurisdiction = city or county
+                site.checklist_provenance["COUNTY_NAME"] = "auto"
+                site.checklist_provenance["STATE_NAME"] = "auto"
+                site.checklist_provenance["ZIP_CODE"] = "auto"
+                site.checklist_provenance["JURISDICTION"] = "auto"
+        except Exception:
+            pass
+
+    # ── Open-Elevation API ──
+    try:
+        resp = requests.get(
+            "https://api.open-elevation.com/api/v1/lookup",
+            params={"locations": f"{lat},{lon}"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            results = resp.json().get("results", [])
+            if results:
+                site.identity.site_elevation = results[0].get("elevation")
+                site.checklist_provenance["SITE_ELEVATION"] = "auto"
+    except Exception:
+        pass
+
+    # ── Gemini Flash: building height from photo ──
+    if site.structure.building_height is None:
+        overview_photos = [p for p in site.photos if p.category == "Site" and
+                          any(kw in p.photo_id.lower() for kw in ["overview", "front", "building"])]
+        if not overview_photos and site.photos:
+            overview_photos = [site.photos[0]]
+        if overview_photos:
+            photo_path = overview_photos[0].file_path
+            if os.path.exists(photo_path):
+                result = estimate_building_height_gemini(photo_path)
+                if result and result.get("estimated_height_ft"):
+                    site.structure.building_height = float(result["estimated_height_ft"])
+                    site.checklist_provenance["BUILDING_HEIGHT"] = "auto"
+
+    # ── Overpass: building height from OSM (fallback) ──
+    if site.structure.building_height is None:
+        try:
+            bldg_query = f"""
+            [out:json][timeout:10];
+            way["building"](around:30,{lat},{lon});
+            out tags;
+            """
+            resp = requests.post(
+                "https://overpass-api.de/api/interpreter",
+                data={"data": bldg_query},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                elements = resp.json().get("elements", [])
+                for el in elements:
+                    tags = el.get("tags", {})
+                    height_str = tags.get("height") or tags.get("building:height")
+                    levels_str = tags.get("building:levels")
+                    if height_str:
+                        try:
+                            site.structure.building_height = float(height_str.replace("m", "").strip()) * 3.281
+                            site.checklist_provenance["BUILDING_HEIGHT"] = "auto"
+                        except ValueError:
+                            pass
+                    elif levels_str:
+                        try:
+                            site.structure.building_height = float(levels_str) * 13.0
+                            site.checklist_provenance["BUILDING_HEIGHT"] = "auto"
+                        except ValueError:
+                            pass
+        except Exception:
+            pass
+
+    # ── Overpass: airport and heliport distances ──
+    try:
+        overpass_query = f"""
+        [out:json][timeout:10];
+        (
+          node["aeroway"="aerodrome"](around:16000,{lat},{lon});
+          way["aeroway"="aerodrome"](around:16000,{lat},{lon});
+          node["aeroway"="helipad"](around:16000,{lat},{lon});
+          way["aeroway"="helipad"](around:16000,{lat},{lon});
+        );
+        out center;
+        """
+        resp = requests.post(
+            "https://overpass-api.de/api/interpreter",
+            data={"data": overpass_query},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            from geopy.distance import geodesic
+            elements = resp.json().get("elements", [])
+            min_airport_dist = None
+            min_heliport_dist = None
+            nearest_airport_name = None
+            nearest_heliport_name = None
+            for el in elements:
+                el_lat = el.get("lat") or el.get("center", {}).get("lat")
+                el_lon = el.get("lon") or el.get("center", {}).get("lon")
+                if el_lat is None or el_lon is None:
+                    continue
+                dist_mi = geodesic((lat, lon), (el_lat, el_lon)).miles
+                tags = el.get("tags", {})
+                name = tags.get("name", "Unknown")
+                aeroway = tags.get("aeroway", "")
+                if aeroway == "helipad":
+                    if min_heliport_dist is None or dist_mi < min_heliport_dist:
+                        min_heliport_dist = round(dist_mi, 2)
+                        nearest_heliport_name = name
+                else:
+                    if min_airport_dist is None or dist_mi < min_airport_dist:
+                        min_airport_dist = round(dist_mi, 2)
+                        nearest_airport_name = name
+            if nearest_airport_name:
+                site.flight.nearby_airports = f"{nearest_airport_name} ({min_airport_dist} mi)"
+                site.checklist_provenance["NEARBY_AIRPORTS"] = "auto"
+            if nearest_heliport_name:
+                site.flight.nearby_heliports = f"{nearest_heliport_name} ({min_heliport_dist} mi)"
+                site.checklist_provenance["NEARBY_HELIPORTS"] = "auto"
+    except Exception:
+        pass
