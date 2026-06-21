@@ -509,6 +509,7 @@ class CandidateSite:
     scores: SiteScores = field(default_factory=SiteScores)
     photos: List[SurveyPhoto] = field(default_factory=list)
     checklist_provenance: dict = field(default_factory=dict)
+    folder_path: Optional[str] = None  # Local disk path to site folder
 
     def to_json(self) -> dict:
         return {
@@ -524,6 +525,7 @@ class CandidateSite:
             "scores": self.scores.to_json(),
             "photos": [p.to_json() for p in self.photos],
             "checklist_provenance": dict(self.checklist_provenance),
+            "folder_path": self.folder_path,
         }
 
     @classmethod
@@ -541,6 +543,7 @@ class CandidateSite:
             scores=SiteScores.from_json(data.get("scores") or {}),
             photos=[SurveyPhoto.from_json(p) for p in (data.get("photos") or [])],
             checklist_provenance=dict(data.get("checklist_provenance") or {}),
+            folder_path=data.get("folder_path"),
         )
 
     @classmethod
@@ -579,6 +582,7 @@ class CandidateSite:
             ))
 
         site = cls(identity=identity, photos=photos)
+        site.folder_path = data.get("folder_path")
 
         # Carry forward analysis dict fields
         analysis = data.get("analysis") or {}

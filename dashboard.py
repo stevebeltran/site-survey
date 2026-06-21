@@ -641,6 +641,18 @@ def _render_site_checklist(site, site_idx):
                 "Emergency Landing Zone", value=site.flight.emergency_landing_zone or "",
                 key=f"elz_{site_idx}")
 
+        # Photo Category Assignment
+        if site.photos:
+            st.markdown("---")
+            st.markdown("#### Photo Categories")
+            for photo in site.photos:
+                photo.category = st.selectbox(
+                    f"{photo.photo_id}",
+                    ["Site", "Installation", "Infrastructure", "RF", "Access"],
+                    index=["Site", "Installation", "Infrastructure", "RF", "Access"].index(photo.category) if photo.category in ["Site", "Installation", "Infrastructure", "RF", "Access"] else 0,
+                    key=f"photo_cat_{site_idx}_{photo.photo_id}",
+                )
+
 
 # Layout Columns
 tab1, tab2, tab3 = st.tabs(["📋 Survey Pipeline", "🔗 Workflow Sync", "📈 Analytics & Logs"])
@@ -1311,37 +1323,20 @@ with tab1:
                     st.success(f"Generated report: `{report_path}`")
                     st.session_state.generated_report = report_path
 
-                    # Export buttons
-                    if st.session_state.candidate_sites:
-                        exp_col1, exp_col2, exp_col3 = st.columns(3)
-                        with exp_col1:
-                            json_path = os.path.join(report_subfolder, "survey_export.json")
-                            export_sites_json(st.session_state.candidate_sites, json_path)
-                            with open(json_path, "r") as jf:
-                                st.download_button("📥 Download JSON", jf.read(),
-                                    "survey_export.json", mime="application/json", key="json_save")
-                            if report_drive and st.session_state.get("metadata_folder_id"):
-                                try:
-                                    report_drive.upload_file(json_path, st.session_state.metadata_folder_id)
-                                except Exception:
-                                    pass
-                        with exp_col2:
-                            csv_path = os.path.join(report_subfolder, "survey_export.csv")
-                            export_sites_csv(st.session_state.candidate_sites, csv_path)
-                            with open(csv_path, "r") as cf:
-                                st.download_button("📥 Download CSV", cf.read(),
-                                    "survey_export.csv", mime="text/csv", key="csv_save")
-                            if report_drive and st.session_state.get("metadata_folder_id"):
-                                try:
-                                    report_drive.upload_file(csv_path, st.session_state.metadata_folder_id)
-                                except Exception:
-                                    pass
-                        with exp_col3:
-                            with open(report_path, "rb") as rf:
-                                st.download_button("📥 Download DOCX", rf.read(),
-                                    os.path.basename(report_path),
-                                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                                    key="docx_save")
+                    # Upload exports to Drive if authenticated
+                    if st.session_state.candidate_sites and report_drive and st.session_state.get("metadata_folder_id"):
+                        try:
+                            _json_path = os.path.join(report_subfolder, "survey_export.json")
+                            export_sites_json(st.session_state.candidate_sites, _json_path)
+                            report_drive.upload_file(_json_path, st.session_state.metadata_folder_id)
+                        except Exception:
+                            pass
+                        try:
+                            _csv_path = os.path.join(report_subfolder, "survey_export.csv")
+                            export_sites_csv(st.session_state.candidate_sites, _csv_path)
+                            report_drive.upload_file(_csv_path, st.session_state.metadata_folder_id)
+                        except Exception:
+                            pass
 
                     # Update Drive folder URL if we have the folder ID
                     if st.session_state.get("client_folder_id"):
@@ -1349,6 +1344,31 @@ with tab1:
 
                 except Exception as e:
                     st.error(f"Report generation error: {e}")
+
+            # Persistent export buttons — survive reruns
+            if st.session_state.get("generated_report") and st.session_state.candidate_sites:
+                report_path = st.session_state.generated_report
+                if os.path.exists(report_path):
+                    report_subfolder = os.path.dirname(report_path)
+                    exp_col1, exp_col2, exp_col3 = st.columns(3)
+                    with exp_col1:
+                        json_path = os.path.join(report_subfolder, "survey_export.json")
+                        export_sites_json(st.session_state.candidate_sites, json_path)
+                        with open(json_path, "r") as jf:
+                            st.download_button("📥 Download JSON", jf.read(),
+                                "survey_export.json", mime="application/json", key="json_save_persist")
+                    with exp_col2:
+                        csv_path = os.path.join(report_subfolder, "survey_export.csv")
+                        export_sites_csv(st.session_state.candidate_sites, csv_path)
+                        with open(csv_path, "r") as cf:
+                            st.download_button("📥 Download CSV", cf.read(),
+                                "survey_export.csv", mime="text/csv", key="csv_save_persist")
+                    with exp_col3:
+                        with open(report_path, "rb") as rf:
+                            st.download_button("📥 Download DOCX", rf.read(),
+                                os.path.basename(report_path),
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                key="docx_save_persist")
         else:
             st.info("No sites loaded. Run the ingestion step first.")
 

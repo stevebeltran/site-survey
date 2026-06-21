@@ -612,25 +612,27 @@ def create_engineering_drawing(bg_path, output_path, markers, engineer_note, add
 
 def add_styled_table(doc, data, headers):
     """
-    Construct a clean, well-padded Table styled matching LANSING_PD_Site_Survey
+    Construct a clean, well-padded Table styled matching LANSING_PD_Site_Survey.
+    Supports 2 or 3 columns depending on len(headers).
     """
-    table = doc.add_table(rows=len(data) + 1, cols=2)
+    ncols = len(headers)
+    table = doc.add_table(rows=len(data) + 1, cols=ncols)
     table.style = 'Table Grid'
-    
+
     hdr_cells = table.rows[0].cells
-    hdr_cells[0].text = headers[0]
-    hdr_cells[1].text = headers[1]
-    
-    for i in range(2):
+    for i, h in enumerate(headers):
+        hdr_cells[i].text = h
+
+    for i in range(ncols):
         hdr_cells[i].paragraphs[0].runs[0].font.bold = True
         hdr_cells[i].paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 255, 255)
-        
-    for r_idx, (key, val) in enumerate(data):
+
+    for r_idx, row in enumerate(data):
         row_cells = table.rows[r_idx + 1].cells
-        row_cells[0].text = str(key)
-        row_cells[1].text = str(val)
+        for c_idx, cell_val in enumerate(row):
+            row_cells[c_idx].text = str(cell_val)
         row_cells[0].paragraphs[0].runs[0].font.bold = True
-        
+
     doc.add_paragraph()
 
 def generate_word_report(site_data_list, output_filepath, customer_info=None, drive_manager=None, drive_reports_folder_id=None):
@@ -876,7 +878,34 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
                 else:
                     doc.add_paragraph(f"[Photo: {photo.photo_id}]")
 
-        # 2c. Access
+        # 2c. Checklist Summary
+        doc.add_heading("Checklist Summary", level=2)
+        summary_rows = []
+        field_labels = {
+            "ACCESS_TYPE": "Access Type", "ROOF_ACCESS": "Roof Access",
+            "ESCORT_REQUIRED": "Escort Required", "KEY_REQUIRED": "Key Required",
+            "BUILDING_HEIGHT": "Building Height", "ROOF_TYPE": "Roof Type",
+            "PARAPET_HEIGHT": "Parapet Height", "ROOF_CONDITION": "Roof Condition",
+            "POWER_AVAILABLE": "Power Available", "VOLTAGE_AVAILABLE": "Voltage",
+            "DEDICATED_CIRCUIT": "Dedicated Circuit", "PANEL_LOCATION": "Panel Location",
+            "ISP_PROVIDER": "ISP Provider", "DOWNLOAD_SPEED": "Download Speed",
+            "UPLOAD_SPEED": "Upload Speed", "STATIC_IP_AVAILABLE": "Static IP",
+            "LINE_OF_SIGHT_STATUS": "Line of Sight", "COVERAGE_DIRECTION": "Coverage Direction",
+            "AIRSPACE_CLASS": "Airspace Class", "SITE_ELEVATION": "Elevation",
+            "COUNTY_NAME": "County", "STATE_NAME": "State", "ZIP_CODE": "ZIP Code",
+        }
+        all_fields = site.to_csv_row()
+        for field_id, label in field_labels.items():
+            value = all_fields.get(field_id)
+            if value is not None and value != "" and str(value) != "None":
+                source = site.checklist_provenance.get(field_id, "pm")
+                summary_rows.append([label, str(value), "Auto" if source == "auto" else "Manual"])
+        if summary_rows:
+            add_styled_table(doc, summary_rows, ["Field", "Value", "Source"])
+        else:
+            doc.add_paragraph("No checklist fields have been filled.")
+
+        # 2d. Access
         doc.add_heading("Access", level=3)
         add_styled_table(doc, [
             ["Access Type", site.access.access_type or "—"],
@@ -887,7 +916,7 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
             ["Parking Available", _yn(site.access.parking_available)],
         ], ["Field", "Value"])
 
-        # 2d. Electrical Assessment
+        # 2e. Electrical Assessment
         doc.add_heading("Electrical Assessment", level=3)
         add_styled_table(doc, [
             ["Power Available", _yn(site.electrical.power_available)],
@@ -898,7 +927,7 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
             ["Distance to Power", f"{site.electrical.distance_to_power} ft" if site.electrical.distance_to_power else "—"],
         ], ["Field", "Value"])
 
-        # 2e. Network Assessment
+        # 2f. Network Assessment
         doc.add_heading("Network Assessment", level=3)
         add_styled_table(doc, [
             ["ISP Provider", site.network.isp_provider or "—"],
@@ -910,7 +939,7 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
             ["Distance to Network", f"{site.network.distance_to_network} ft" if site.network.distance_to_network else "—"],
         ], ["Field", "Value"])
 
-        # 2f. RF Assessment
+        # 2g. RF Assessment
         doc.add_heading("RF Assessment", level=3)
         add_styled_table(doc, [
             ["Line of Sight", site.rf.line_of_sight_status or "—"],
@@ -921,7 +950,7 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
             ["Coverage Direction", site.rf.coverage_direction or "—"],
         ], ["Field", "Value"])
 
-        # 2g. Airspace Assessment
+        # 2h. Airspace Assessment
         doc.add_heading("Airspace Assessment", level=3)
         add_styled_table(doc, [
             ["Airspace Class", site.flight.airspace_class or "—"],
@@ -955,7 +984,7 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
     doc.add_heading("Annotated Photo Appendix", level=1)
     has_annotations = False
     for idx, site in enumerate(candidate_sites, start=1):
-        folder = getattr(site.identity, '_folder_path', None)
+        folder = site.folder_path
         if folder and os.path.isdir(folder):
             for fname in sorted(os.listdir(folder)):
                 if fname.startswith("engineering_layout") and fname.endswith(".png"):
