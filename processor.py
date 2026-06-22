@@ -220,6 +220,53 @@ def cluster_images_dbscan(images_meta, eps_meters=90.0, min_samples=1):
     return list(clusters_dict.values())
 
 
+def split_clusters_by_time_gap(clusters, gap_minutes=10):
+    """Split clusters where consecutive photos have a large time gap.
+
+    When a surveyor drives between sites, photos within the same spatial
+    cluster may span a long time gap.  Splitting on that gap separates
+    the two logical sites.
+
+    Args:
+        clusters: list of lists of image meta dicts (each dict has 'time').
+        gap_minutes: minimum gap in minutes to trigger a split.
+
+    Returns:
+        list of lists — same shape, but clusters with internal time gaps
+        are split into separate entries.
+    """
+    from datetime import timedelta
+
+    gap_threshold = timedelta(minutes=gap_minutes)
+    result = []
+
+    for cluster in clusters:
+        # Sort by capture time; images without timestamps stay together
+        timed = [img for img in cluster if img.get("time") is not None]
+        untimed = [img for img in cluster if img.get("time") is None]
+
+        if len(timed) <= 1:
+            result.append(cluster)
+            continue
+
+        timed.sort(key=lambda m: m["time"])
+        current_group = [timed[0]]
+
+        for prev, curr in zip(timed, timed[1:]):
+            if curr["time"] - prev["time"] >= gap_threshold:
+                # Flush current group
+                result.append(current_group)
+                current_group = [curr]
+            else:
+                current_group.append(curr)
+
+        # Attach untimed images to the last group
+        current_group.extend(untimed)
+        result.append(current_group)
+
+    return result
+
+
 def cluster_to_candidate_sites(clusters, agency_name="", survey_date=None):
     """Convert cluster output into a list of CandidateSite objects.
 
@@ -451,8 +498,13 @@ def _sanitize_folder_name(value, fallback="Police_Department"):
     return name or fallback
 
 
-def _derive_department_folder_name(full_address=None):
+def _derive_department_folder_name(full_address=None, agency_name=None):
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Prefer the explicit agency name when provided
+    if agency_name and str(agency_name).strip():
+        base = _sanitize_folder_name(agency_name)
+        return f"{base}_{timestamp}"
 
     if not full_address or str(full_address).startswith("Site Coordinate ("):
         base = "Police_Department"
@@ -478,7 +530,7 @@ def _derive_department_folder_name(full_address=None):
     return f"{_sanitize_folder_name(base)}_{timestamp}"
 
 
-def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, progress_callback=None, image_paths=None, drive_manager=None, drive_output_folder_id=None):
+def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, progress_callback=None, image_paths=None, drive_manager=None, drive_output_folder_id=None, agency_name=None):
     """
     Scan source_dir for images, cluster by GPS, reverse-geocode,
     create subdirectories in output_dir, copy files, and return structure.
@@ -494,6 +546,7 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
         image_paths: Optional list of specific image paths to process
         drive_manager: Optional GoogleDriveManager instance for Drive upload
         drive_output_folder_id: Optional Google Drive folder ID for upload
+        agency_name: Optional agency name for folder labeling
 
     Returns:
         list: site_data with structure:
@@ -555,10 +608,14 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
             
     # Cluster images with GPS
     _report_progress(65, "Clustering GPS-tagged images...")
-    clusters = cluster_images(images_meta, radius_meters)
+    clusters = cluster_images_dbscan(images_meta, eps_meters=radius_meters)
+    clusters = split_clusters_by_time_gap(clusters)
     
     site_data = []
-    batch_folder_name = _derive_department_folder_name(reverse_geocode(clusters[0][0]["lat"], clusters[0][0]["lon"])) if clusters else _derive_department_folder_name()
+    batch_folder_name = _derive_department_folder_name(
+        full_address=reverse_geocode(clusters[0][0]["lat"], clusters[0][0]["lon"]) if clusters else None,
+        agency_name=agency_name,
+    )
     batch_folder = os.path.join(output_dir, batch_folder_name)
     if not os.path.exists(batch_folder):
         os.makedirs(batch_folder)
@@ -593,9 +650,9 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
             img_copy['dest_path'] = dest_path
             copied_images.append(img_copy)
             
-        # Extract city from full address and generate agency name
+        # Extract city from full address; use caller-provided agency name if available
         city = extract_city_from_address(full_address)
-        agency_name = f"{city} Police Department" if city else None
+        site_agency = agency_name or (f"{city} Police Department" if city else None)
 
         site_data.append({
             'site_id': f"SITE-{idx+1:03d}",
@@ -604,7 +661,7 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
             'batch_folder_path': batch_folder,
             'address': full_address,
             'city': city,
-            'agency_name': agency_name,
+            'agency_name': site_agency,
             'latitude': center_lat,
             'longitude': center_lon,
             'images': copied_images

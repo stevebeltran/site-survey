@@ -30,7 +30,7 @@ import processor
 import analyzer
 import reporter
 from site_model import CandidateSite, export_sites_json, export_sites_csv
-from processor import cluster_images_dbscan, cluster_to_candidate_sites
+from processor import cluster_images_dbscan, split_clusters_by_time_gap, cluster_to_candidate_sites
 from analyzer import enrich_gis
 
 # Import the image coordinates package
@@ -525,7 +525,8 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                     progress_callback=_update_processing_progress,
                     image_paths=image_paths_for_processing,
                     drive_manager=proc_drive,
-                    drive_output_folder_id=st.session_state.get('processed_folder_id')
+                    drive_output_folder_id=st.session_state.get('processed_folder_id'),
+                    agency_name=st.session_state.customer_info.get("agency_name"),
                 )
 
                 if not site_data:
@@ -589,6 +590,7 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                         for site in site_data:
                             all_images.extend(site.get("images", []))
                         clusters = cluster_images_dbscan(all_images)
+                        clusters = split_clusters_by_time_gap(clusters)
                         st.session_state.candidate_sites = cluster_to_candidate_sites(
                             clusters, agency_name=st.session_state.customer_info.get("agency_name", "")
                         )
