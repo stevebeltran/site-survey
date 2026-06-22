@@ -1,7 +1,10 @@
 import os
 import json
 import base64
+import logging
 import requests
+
+logger = logging.getLogger(__name__)
 
 try:
     import google.generativeai as genai
@@ -244,8 +247,12 @@ def enrich_gis(site, skip_nominatim=False):
                 site.checklist_provenance["STATE_NAME"] = "auto"
                 site.checklist_provenance["ZIP_CODE"] = "auto"
                 site.checklist_provenance["JURISDICTION"] = "auto"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Nominatim reverse geocode failed for (%s, %s): %s", lat, lon, e)
+            site.checklist_provenance["COUNTY_NAME"] = "failed"
+            site.checklist_provenance["STATE_NAME"] = "failed"
+            site.checklist_provenance["ZIP_CODE"] = "failed"
+            site.checklist_provenance["JURISDICTION"] = "failed"
 
     # ── Open-Elevation API ──
     try:
@@ -259,8 +266,9 @@ def enrich_gis(site, skip_nominatim=False):
             if results:
                 site.identity.site_elevation = results[0].get("elevation")
                 site.checklist_provenance["SITE_ELEVATION"] = "auto"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Open-Elevation lookup failed for (%s, %s): %s", lat, lon, e)
+        site.checklist_provenance["SITE_ELEVATION"] = "failed"
 
     # ── Gemini Flash: building height from photo ──
     if site.structure.building_height is None:
@@ -307,8 +315,9 @@ def enrich_gis(site, skip_nominatim=False):
                             site.checklist_provenance["BUILDING_HEIGHT"] = "auto"
                         except ValueError:
                             pass
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Overpass building-height lookup failed for (%s, %s): %s", lat, lon, e)
+            site.checklist_provenance["BUILDING_HEIGHT"] = site.checklist_provenance.get("BUILDING_HEIGHT") or "failed"
 
     # ── Overpass: airport and heliport distances ──
     try:
@@ -357,5 +366,7 @@ def enrich_gis(site, skip_nominatim=False):
             if nearest_heliport_name:
                 site.flight.nearby_heliports = f"{nearest_heliport_name} ({min_heliport_dist} mi)"
                 site.checklist_provenance["NEARBY_HELIPORTS"] = "auto"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Overpass airport/heliport lookup failed for (%s, %s): %s", lat, lon, e)
+        site.checklist_provenance["NEARBY_AIRPORTS"] = site.checklist_provenance.get("NEARBY_AIRPORTS") or "failed"
+        site.checklist_provenance["NEARBY_HELIPORTS"] = site.checklist_provenance.get("NEARBY_HELIPORTS") or "failed"

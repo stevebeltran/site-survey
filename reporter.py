@@ -1,11 +1,14 @@
 import os
 import re
 import datetime
+import logging
 import requests
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from geopy.distance import geodesic
 from PIL import Image, ImageDraw, ImageFont
+
+logger = logging.getLogger(__name__)
 
 
 def _load_font(bold=False, size=28):
@@ -116,9 +119,9 @@ def query_nearest_airfield(lat, lon):
                         nearest = (name, min_dist)
             return nearest
     except Exception as e:
-        print(f"Error querying airfield from Overpass: {e}")
-    
-    return ("Local Regional Airport", 8.2)
+        logger.warning("Overpass nearest-airfield query failed: %s", e)
+
+    return None
 
 def query_airspace_class(lat, lon):
     """
@@ -144,16 +147,18 @@ def query_airspace_class(lat, lon):
                 if airspace_class:
                     return f"Controlled (Class {airspace_class})"
     except Exception as e:
-        print(f"Error querying FAA airspace service: {e}")
-        
-    return "Class G"
+        logger.warning("FAA airspace lookup failed: %s", e)
+
+    return None
 
 
 def query_city_boundary(city_name, state_name=None):
     """Fetch the GeoJSON boundary polygon for a city from OpenStreetMap.
 
-    Uses the Overpass API to find the administrative boundary (admin_level=8)
-    matching the city name. Returns the polygon as GeoJSON geometry, or None.
+    Uses the Overpass API to find the administrative boundary matching the
+    city name. Tries admin_level 8 first (city/town in the US), then falls
+    back to levels 7 and 6. If Overpass returns nothing, tries Nominatim's
+    structured search as a last resort.
 
     Args:
         city_name: e.g. "Zionsville"
@@ -165,8 +170,19 @@ def query_city_boundary(city_name, state_name=None):
     if not city_name:
         return None
 
+    # Try Overpass with multiple admin levels
+    for admin_level in ("8", "7", "6"):
+        result = _query_overpass_boundary(city_name, state_name, admin_level)
+        if result:
+            return result
+
+    # Fallback: Nominatim search for boundary polygon
+    return _query_nominatim_boundary(city_name, state_name)
+
+
+def _query_overpass_boundary(city_name, state_name, admin_level):
+    """Query the Overpass API for a city boundary at a given admin level."""
     url = "https://overpass-api.de/api/interpreter"
-    # admin_level=8 is city/town in the US
     area_filter = ""
     if state_name:
         area_filter = f'area["name"="{state_name}"]["admin_level"="4"]->.state;'
@@ -175,7 +191,7 @@ def query_city_boundary(city_name, state_name=None):
     query = f"""
     [out:json][timeout:10];
     {area_filter}
-    relation["name"="{city_name}"]["admin_level"="8"]{in_area};
+    relation["name"="{city_name}"]["admin_level"="{admin_level}"]{in_area};
     out geom;
     """
     try:
@@ -188,7 +204,6 @@ def query_city_boundary(city_name, state_name=None):
         if not elements:
             return None
 
-        # Build the polygon from the relation's members
         relation = elements[0]
         outer_rings = []
         for member in relation.get("members", []):
@@ -200,7 +215,6 @@ def query_city_boundary(city_name, state_name=None):
         if not outer_rings:
             return None
 
-        # Try to merge connected ways into a single ring
         merged = _merge_way_segments(outer_rings)
 
         if len(merged) == 1:
@@ -209,8 +223,40 @@ def query_city_boundary(city_name, state_name=None):
             return {"type": "MultiPolygon", "coordinates": [[ring] for ring in merged]}
 
     except Exception as e:
-        print(f"Error querying city boundary from Overpass: {e}")
+        logger.warning("Overpass boundary query failed (admin_level=%s): %s", admin_level, e)
         return None
+
+
+def _query_nominatim_boundary(city_name, state_name):
+    """Fallback: use Nominatim search to get a city boundary polygon."""
+    try:
+        params = {
+            "city": city_name,
+            "format": "geojson",
+            "polygon_geojson": 1,
+            "limit": 1,
+        }
+        if state_name:
+            params["state"] = state_name
+        headers = {"User-Agent": "DFR-SiteSurvey/1.0"}
+        resp = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params=params,
+            headers=headers,
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        features = data.get("features", [])
+        if not features:
+            return None
+        geom = features[0].get("geometry")
+        if geom and geom.get("type") in ("Polygon", "MultiPolygon"):
+            return geom
+    except Exception as e:
+        logger.warning("Nominatim boundary fallback failed: %s", e)
+    return None
 
 
 def _merge_way_segments(segments):
@@ -700,10 +746,11 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
     add_styled_table(doc, contact_data, ["CONTACT INFORMATION", "NOTES / VALUE"])
     
     # 3. Installation Timeframe
+    delivery_target = customer_info.get("survey_delivery_target", "TBD")
     timeframe_data = [
-        ("Survey / Delivery Target", "Week of June 9, 2026"),
+        ("Survey / Delivery Target", delivery_target),
         ("Follow up requirements", "Infrastructure checklist completion prior to hardware delivery"),
-        ("Action items", "Confirm ethernet and dedicated 120V power connectivity is established 30 days before installation.")
+        ("Action items", "Confirm ethernet and dedicated power connectivity is established 30 days before installation.")
     ]
     add_styled_table(doc, timeframe_data, ["INSTALLATION TIMEFRAME", "NOTES / VALUE"])
     
@@ -733,31 +780,39 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
             doc.add_paragraph()
 
         # Site Details
+        building_height = site.get('building_height')
+        if building_height:
+            height_str = f"{building_height:.0f} ft" if isinstance(building_height, (int, float)) else str(building_height)
+        else:
+            height_str = "Assessment required"
         details_data = [
             ("Site Name", site_name),
             ("Site Address", _format_short_address(site['address'])),
-            ("Height of building", "2-story (Assessment required)"),
+            ("Height of building", height_str),
             ("Access to roof", analysis.get('roof_access', 'Unknown')),
             ("Roof type", analysis.get('roof_type', 'Unknown'))
         ]
         add_styled_table(doc, details_data, ["SITE DETAILS", "NOTES / VALUE"])
         
         # Considerations & Airspace
+        op_notes = site.get('operational_considerations', "Coordinate install with local facilities team. Clear line of sight required.")
         considerations_data = [
-            ("Operational Considerations", "Coordinate install with local facilities team. Clear line of sight required."),
-            ("Airspace Class", site.get('airspace', 'Class G')),
+            ("Operational Considerations", op_notes),
+            ("Airspace Class", site.get('airspace', 'Unknown')),
             ("Distance to nearest airfield", site.get('airfield_info', 'Unknown'))
         ]
         add_styled_table(doc, considerations_data, ["OPERATIONAL & AIRSPACE", "NOTES / VALUE"])
-        
+
         # Deployment Requirements
+        power_req = customer_info.get("power_circuit_requirements", "120V / 15A Dedicated Circuit, Outdoor Rated") if customer_info else "120V / 15A Dedicated Circuit, Outdoor Rated"
+        network_req = customer_info.get("internet_ethernet_access", "DHCP on isolated VLAN (unrestricted outbound)") if customer_info else "DHCP on isolated VLAN (unrestricted outbound)"
         deployment_data = [
             ("Location (Lat/Long)", f"{site['latitude']:.6f}, {site['longitude']:.6f}"),
             ("Mount Placement Type", "Rooftop / Parapet Mount preferred" if "hatch" in str(analysis).lower() else "Ground Sled / Ballasted"),
             ("Raised Platform required (Snow)", "Yes" if "TPO" in str(analysis) or "EPDM" in str(analysis) else "No"),
             ("Emergency Landing Zone", "Yes (Debris-free zone verified)"),
-            ("Power Circuit Requirements", "120V / 15A Dedicated Circuit, Outdoor Rated"),
-            ("Internet / Ethernet Access", "DHCP on isolated VLAN (unrestricted outbound)")
+            ("Power Circuit Requirements", power_req),
+            ("Internet / Ethernet Access", network_req)
         ]
         add_styled_table(doc, deployment_data, ["DEPLOYMENT SPECIFICATIONS", "NOTES / VALUE"])
         
@@ -958,6 +1013,22 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
             ["Nearby Heliports", site.flight.nearby_heliports or "—"],
             ["Flight Restrictions", site.flight.flight_restrictions or "—"],
         ], ["Field", "Value"])
+
+        # 2i. Data Quality / Provenance
+        failed_lookups = [
+            (field_id, label) for field_id, label in {
+                "COUNTY_NAME": "Geocode (county/state/zip)",
+                "SITE_ELEVATION": "Elevation lookup",
+                "BUILDING_HEIGHT": "Building height estimate",
+                "NEARBY_AIRPORTS": "Airport distance lookup",
+                "NEARBY_HELIPORTS": "Heliport distance lookup",
+            }.items()
+            if site.checklist_provenance.get(field_id) == "failed"
+        ]
+        if failed_lookups:
+            doc.add_heading("Data Quality Notes", level=3)
+            for _, label in failed_lookups:
+                doc.add_paragraph(f"  {label} — lookup failed, value unavailable", style="List Bullet")
 
         doc.add_page_break()
 

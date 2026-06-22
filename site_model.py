@@ -590,16 +590,32 @@ class CandidateSite:
             site.access.roof_access = analysis["roof_access"]
         if analysis.get("roof_type"):
             site.structure.roof_type = analysis["roof_type"]
+        if analysis.get("mounting_structures"):
+            site.structure.structural_concerns = ", ".join(analysis["mounting_structures"])
+        if analysis.get("hardware"):
+            site.installation.install_type = ", ".join(analysis["hardware"])
 
-        # Carry forward airspace dict
-        airspace = data.get("airspace") or {}
-        if airspace.get("designator"):
+        # Carry forward airspace (may be a string like "Class G" or a dict)
+        airspace = data.get("airspace")
+        if isinstance(airspace, str) and airspace and airspace != "Lookup failed":
+            site.flight.airspace_class = airspace
+        elif isinstance(airspace, dict) and airspace.get("designator"):
             site.flight.airspace_class = airspace["designator"]
 
-        # Carry forward airfield_info dict
-        airfield_info = data.get("airfield_info") or {}
-        if airfield_info.get("name"):
+        # Carry forward airfield_info (may be a string like "Name (X.XX miles)" or a dict)
+        airfield_info = data.get("airfield_info")
+        if isinstance(airfield_info, str) and airfield_info and airfield_info != "Lookup failed":
+            site.flight.nearby_airports = airfield_info
+        elif isinstance(airfield_info, dict) and airfield_info.get("name"):
             site.flight.nearby_airports = airfield_info["name"]
+
+        # Carry forward markers/annotations if present
+        markers_by_image = data.get("markers_by_image")
+        if markers_by_image:
+            site._legacy_markers_by_image = markers_by_image
+        image_placements = data.get("image_placements_by_image")
+        if image_placements:
+            site._legacy_image_placements = image_placements
 
         return site
 

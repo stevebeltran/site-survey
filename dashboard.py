@@ -220,12 +220,14 @@ def _detect_agency_from_gps(first_file_bytes, first_file_name):
             return None
         full_address = processor.reverse_geocode(lat, lon)
         city = processor.extract_city_from_address(full_address)
+        state = getattr(full_address, 'state', None)
         agency_name = f"{city} Police Department" if city else None
         return {
             "lat": lat,
             "lon": lon,
             "address": full_address,
             "city": city,
+            "state": state,
             "agency_name": agency_name,
         }
     except Exception as e:
@@ -435,8 +437,10 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
 
         for site in site_data:
             site["analysis"] = analyzer.analyze_site(site)
-            site["airfield_info"] = f"{reporter.query_nearest_airfield(site['latitude'], site['longitude'])[0]} ({reporter.query_nearest_airfield(site['latitude'], site['longitude'])[1]:.2f} miles)"
-            site["airspace"] = reporter.query_airspace_class(site["latitude"], site["longitude"])
+            airfield = reporter.query_nearest_airfield(site['latitude'], site['longitude'])
+            site["airfield_info"] = f"{airfield[0]} ({airfield[1]:.2f} miles)" if airfield else "Lookup failed"
+            airspace = reporter.query_airspace_class(site["latitude"], site["longitude"])
+            site["airspace"] = airspace if airspace else "Lookup failed"
             for img in site.get("images", []):
                 if "selected_for_report" not in img:
                     img["selected_for_report"] = True
@@ -813,6 +817,28 @@ with tab1:
             st.session_state.customer_info["facilities_engineer"] = row["name"]
             st.session_state.customer_info["facilities_email"] = row["email"]
 
+    # --- Deployment Specifications ---
+    st.markdown("**Deployment Specifications**")
+    ds1, ds2, ds3 = st.columns(3)
+    with ds1:
+        st.session_state.customer_info["survey_delivery_target"] = st.text_input(
+            "Survey / Delivery Target",
+            value=st.session_state.customer_info.get("survey_delivery_target", ""),
+            placeholder="e.g. Week of September 28, 2026",
+        )
+    with ds2:
+        st.session_state.customer_info["power_circuit_requirements"] = st.text_input(
+            "Power Circuit Requirements",
+            value=st.session_state.customer_info.get("power_circuit_requirements", ""),
+            placeholder="e.g. 120V / 20A Dedicated Circuit",
+        )
+    with ds3:
+        st.session_state.customer_info["internet_ethernet_access"] = st.text_input(
+            "Internet / Ethernet Access",
+            value=st.session_state.customer_info.get("internet_ethernet_access", ""),
+            placeholder="e.g. DHCP on isolated VLAN",
+        )
+
     st.divider()
 
     # Three column layout: Left (Sites), Middle (Map/Markup), Right (History)
@@ -822,8 +848,11 @@ with tab1:
         if st.session_state.processed_sites:
             st.subheader("Sites Detected")
             for site in st.session_state.processed_sites:
-                st.markdown(f"**{site['site_id']}: {site['address'].split(',')[0]}**")
-                st.caption(f"Coordinates: {site['latitude']:.4f}, {site['longitude']:.4f}")
+                # Build a readable street address from the first two comma parts
+                _parts = [p.strip() for p in site['address'].split(',')]
+                _label = ', '.join(_parts[:2]) if len(_parts) >= 2 else site['address']
+                st.markdown(f"**{site['site_id']}: {_label}**")
+                st.caption(f"Photos: {len(site.get('images', []))} · Coordinates: {site['latitude']:.4f}, {site['longitude']:.4f}")
                 st.caption(f"Airspace: `{site['airspace']}`")
 
             # Clickable link to the Google Drive working directory
@@ -844,23 +873,9 @@ with tab1:
 
             # City boundary overlay
             if "city_boundary_geojson" not in st.session_state:
-                city = st.session_state.get("gps_detected_agency", {}).get("city", "")
-                state = ""
-                # Extract state from address — handles both raw Nominatim
-                # ("..., State, ZIP, United States") and formatted
-                # ("street, city, State ZIP") formats.
-                addr = st.session_state.customer_info.get("agency_address", "")
-                addr_parts = [p.strip() for p in addr.split(",")]
-                for idx, part in enumerate(addr_parts):
-                    # Raw format: part followed by a separate ZIP part
-                    if idx + 1 < len(addr_parts) and addr_parts[idx + 1].strip()[:5].isdigit():
-                        state = part
-                        break
-                    # Formatted: "State ZIP" merged in the last segment
-                    tokens = part.split()
-                    if len(tokens) >= 2 and re.match(r'^\d{5}(-\d{4})?$', tokens[-1]):
-                        state = " ".join(tokens[:-1])
-                        break
+                detected = st.session_state.get("gps_detected_agency", {})
+                city = detected.get("city", "")
+                state = detected.get("state", "")
                 geojson = reporter.query_city_boundary(city, state) if city else None
                 st.session_state.city_boundary_geojson = geojson
 
@@ -872,8 +887,9 @@ with tab1:
                     style_function=lambda _: {
                         "fillColor": "#3b82f6",
                         "color": "#1e40af",
-                        "weight": 2,
-                        "fillOpacity": 0.08,
+                        "weight": 2.5,
+                        "dashArray": "6 4",
+                        "fillOpacity": 0.06,
                     },
                 ).add_to(m)
 
@@ -881,7 +897,8 @@ with tab1:
 
             for site in sites:
                 lat, lon = site['latitude'], site['longitude']
-                label = site['address'].split(',')[0]
+                _parts = [p.strip() for p in site['address'].split(',')]
+                label = ', '.join(_parts[:2]) if len(_parts) >= 2 else site['address']
 
                 # 2-mile radius ring
                 folium.Circle(
@@ -906,7 +923,12 @@ with tab1:
             st_folium(m, use_container_width=True, height=450, returned_objects=[])
             
             # Show detailed card for selected site
-            selected_site_idx = st.selectbox("Select Site to Inspect", range(len(st.session_state.processed_sites)), format_func=lambda idx: st.session_state.processed_sites[idx]['site_id'])
+            def _site_label(idx):
+                s = st.session_state.processed_sites[idx]
+                _p = [p.strip() for p in s['address'].split(',')]
+                _a = ', '.join(_p[:2]) if len(_p) >= 2 else s['address']
+                return f"{s['site_id']}: {_a}"
+            selected_site_idx = st.selectbox("Select Site to Inspect", range(len(st.session_state.processed_sites)), format_func=_site_label)
             selected_site = st.session_state.processed_sites[selected_site_idx]
 
             # Auto-populate agency name from batch folder name
@@ -1105,18 +1127,22 @@ with tab1:
                                 with Image.open(display_img_path) as temp_img:
                                     w, h = temp_img.size
 
-                                # Scale click coordinates from 600px display to actual image dimensions
-                                display_width = 600
-                                scale_x = w / display_width
-                                scale_y = h / (display_width * h / w)  # Maintain aspect ratio
-                                click_x = click_x * scale_x
-                                click_y = click_y * scale_y
+                                # Compute actual display dimensions matching the widget constraints
+                                if h > w:
+                                    # Portrait: height was constrained
+                                    display_h = min(600, h)
+                                    display_w = display_h * w / h
+                                else:
+                                    # Landscape or square: width was constrained
+                                    display_w = min(600, w)
+                                    display_h = display_w * h / w
+
+                                # Normalize click to 0..1 ratios against displayed dimensions
+                                ratio_x = click_x / display_w
+                                ratio_y = click_y / display_h
 
                                 is_drawing = os.path.exists(output_drawing_path)
                                 photo_width_ratio = 0.80 if is_drawing else 1.0
-
-                                ratio_x = click_x / w
-                                ratio_y = click_y / h
 
                                 if ratio_x <= photo_width_ratio:
                                     if "Node" in placement_mode:

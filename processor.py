@@ -1,8 +1,11 @@
 import os
 import shutil
 import datetime
+import logging
 
 from site_model import CandidateSite, SiteIdentity, SurveyPhoto, categorize_photo_by_filename
+
+logger = logging.getLogger(__name__)
 
 try:
     import exifread
@@ -249,8 +252,8 @@ def cluster_to_candidate_sites(clusters, agency_name="", survey_date=None):
             if result:
                 addr = result
                 city = extract_city_from_address(result)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Reverse geocode failed for cluster %d at (%s, %s): %s", idx, center_lat, center_lon, e)
 
         site_name = city if city else f"Site {idx}"
         safe_agency = agency_name.replace(" ", "_") if agency_name else "Survey"
@@ -306,6 +309,10 @@ def extract_city_from_address(full_address):
     if not full_address:
         return None
 
+    # Use structured city data from Nominatim when available (GeoResult)
+    if hasattr(full_address, 'city') and full_address.city:
+        return full_address.city
+
     full_address = str(full_address).strip()
 
     # Fallback coordinate-only addresses have no city
@@ -325,18 +332,24 @@ def extract_city_from_address(full_address):
     # We want the city, which is usually the 2nd element (index 1)
     # But we need to skip pure numbers, counties, and country names
 
-    excluded_keywords = {
+    # Single-word geographic terms to exclude (matched per-word)
+    excluded_words = {
         'county', 'parish', 'district', 'region',
-        'united states', 'usa', 'us',
+        'usa', 'us',
+    }
+    # Multi-word phrases to exclude (matched against full part)
+    excluded_phrases = {
+        'united states',
         'england', 'scotland', 'wales', 'northern ireland',
         'france', 'germany', 'italy', 'spain', 'canada', 'mexico',
-        'australia', 'new zealand'
+        'australia', 'new zealand',
     }
 
+    # Street type words (matched per-word, not as substrings)
     street_indicators = {
         'street', 'st', 'road', 'rd', 'avenue', 'ave', 'blvd', 'boulevard',
         'lane', 'ln', 'drive', 'dr', 'way', 'circle', 'cir', 'court', 'ct',
-        'place', 'pl', 'terrace', 'parkway', 'path', 'trails'
+        'place', 'pl', 'terrace', 'parkway', 'path', 'trails',
     }
 
     # Try to find the first non-street, non-excluded part that's a reasonable city name
@@ -351,16 +364,24 @@ def extract_city_from_address(full_address):
         if part.isdigit():
             continue
 
-        # Skip if it's an excluded keyword
-        if part_lower in excluded_keywords:
-            continue
-
         # Skip if it starts with a digit (street address like "123 Main St")
         if part[0].isdigit():
             continue
 
-        # Skip if it's a street indicator (contains street terms)
-        if any(indicator in part_lower for indicator in street_indicators):
+        # Word-level matching: split into individual words for precise checks
+        part_words = set(part_lower.split())
+
+        # Skip if any word is an excluded geographic term (e.g. "Crittenden County")
+        if part_words & excluded_words:
+            continue
+
+        # Skip if full part matches a multi-word excluded phrase
+        if part_lower in excluded_phrases:
+            continue
+
+        # Skip if any word is a street type indicator
+        # (word-level match prevents "st" from matching inside "West")
+        if part_words & street_indicators:
             continue
 
         # This is likely the city. Remove "Police Department" suffix if present
@@ -373,23 +394,47 @@ def extract_city_from_address(full_address):
 
     return None
 
+
+class GeoResult(str):
+    """String subclass that carries structured city/state data from Nominatim.
+
+    Behaves exactly like a str (the full address) everywhere existing code
+    uses it, but also exposes .city and .state attributes extracted from
+    Nominatim's structured address fields.
+    """
+    def __new__(cls, address, city=None, state=None):
+        instance = super().__new__(cls, address)
+        instance.city = city
+        instance.state = state
+        return instance
+
+
 def reverse_geocode(lat, lon):
     """
     Get address name for a coordinate using Nominatim.
     Includes rate-limit handling and offline fallback names.
+    Returns a GeoResult (str subclass) with a .city attribute from structured data.
     """
     try:
         # Nominatim requires a descriptive user_agent
         geolocator = Nominatim(user_agent="dfr_site_survey_automation_processor")
         location = geolocator.reverse((lat, lon), timeout=1.5)
         if location and location.address:
-            return location.address
+            # Extract city and state from Nominatim's structured address fields
+            city = None
+            raw_addr = location.raw.get('address', {})
+            for key in ('city', 'town', 'village', 'hamlet', 'municipality'):
+                if key in raw_addr:
+                    city = raw_addr[key]
+                    break
+            state = raw_addr.get('state')
+            return GeoResult(location.address, city=city, state=state)
     except (GeocoderTimedOut, GeocoderServiceError) as e:
         print(f"Geocoding service unavailable or timed out: {e}")
     except Exception as e:
         print(f"Geocoding error: {e}")
-        
-    return f"Site Coordinate ({lat:.5f}, {lon:.5f})"
+
+    return GeoResult(f"Site Coordinate ({lat:.5f}, {lon:.5f})")
 
 
 def _sanitize_folder_name(value, fallback="Police_Department"):
