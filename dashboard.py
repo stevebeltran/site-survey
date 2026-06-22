@@ -664,7 +664,7 @@ tab1, tab2, tab3 = st.tabs(["📋 Survey Pipeline", "🔗 Workflow Sync", "📈 
 with tab1:
     # 0. Customer Info Panel at the top
     st.subheader("Customer & Agency Information")
-    col_c1, col_c2 = st.columns([2, 1])
+    col_c1, col_c2, col_c3 = st.columns([2, 1, 1.5])
     with col_c1:
         st.session_state.customer_info["agency_name"] = st.text_input("Agency Name", value=st.session_state.customer_info["agency_name"])
         st.session_state.customer_info["agency_address"] = st.text_input("Agency Address", value=st.session_state.customer_info["agency_address"])
@@ -672,34 +672,103 @@ with tab1:
         st.markdown("")  # spacer to align button with inputs
         st.markdown("")
         if google_oauth.is_authenticated():
-            if st.button("🔌 Pull Contacts from Gmail", use_container_width=True):
+            if st.button("🔌 Pull from Gmail & Drive", use_container_width=True):
                 agency = st.session_state.customer_info.get("agency_name", "")
                 if not agency:
                     st.warning("Enter or detect an Agency Name first.")
                 else:
                     city = st.session_state.get("gps_detected_agency", {}).get("city", "")
-                    contacts = _lookup_contacts_from_gmail(agency, city)
+
+                    # --- Gmail: contacts ---
+                    with st.spinner("Searching Gmail for contact information..."):
+                        contacts = _lookup_contacts_from_gmail(agency, city)
                     status = contacts.get("status", "no_results") if contacts else "no_results"
                     if status == "auth_error":
                         err = contacts.get("error", "")
                         st.error(f"Gmail authentication error: {err}")
                         st.session_state.integration_logs.append(f"[Gmail API] Auth error: {err}")
                     elif status == "connected":
-                        # Store all found contacts for the table
                         found = contacts.get("all_contacts", [])
                         if found:
                             st.session_state["gmail_found_contacts"] = found
-                        # Auto-assign best guesses
                         for key in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email"):
                             if contacts.get(key):
                                 st.session_state.customer_info[key] = contacts[key]
                         st.session_state.integration_logs.append(f"[Gmail API] Found {len(found)} contacts for {agency}")
-                        st.rerun()
                     else:
-                        st.info(f"Connected to Gmail but no matching threads or calendar invites found for \"{agency}\".")
+                        st.info(f"No matching Gmail threads found for \"{agency}\".")
                         st.session_state.integration_logs.append(f"[Gmail API] Connected — no contacts found for {agency}")
+
+                    # --- Drive: Gemini notes & folders ---
+                    with st.spinner("Searching Google Drive for Gemini notes and folder information..."):
+                        from gmail_lookup import search_drive_for_gemini_notes
+                        drive_results = search_drive_for_gemini_notes(agency, city)
+                    drive_status = drive_results.get("status", "no_results")
+                    if drive_status == "auth_error":
+                        st.warning(f"Drive search error: {drive_results.get('error', 'Unknown')}")
+                    elif drive_status == "connected":
+                        st.session_state["drive_gemini_results"] = drive_results
+                        notes_count = len(drive_results.get("gemini_notes", []))
+                        folders_count = len(drive_results.get("drive_folders", []))
+                        st.session_state.integration_logs.append(
+                            f"[Drive API] Found {notes_count} Gemini notes, {folders_count} folders for {agency}"
+                        )
+                        # Auto-populate deployment specs from extracted data
+                        specs = drive_results.get("extracted_specs", {})
+                        for spec_key in ("power_circuit_requirements", "internet_ethernet_access"):
+                            if specs.get(spec_key) and not st.session_state.customer_info.get(spec_key):
+                                st.session_state.customer_info[spec_key] = specs[spec_key]
+                    else:
+                        st.session_state.integration_logs.append(f"[Drive API] No Gemini notes found for {agency}")
+
+                    st.rerun()
         else:
-            google_oauth.render_connect_button("Connect Google for Gmail Lookup")
+            google_oauth.render_connect_button("Connect Google for Gmail & Drive Lookup")
+
+    with col_c3:
+        # --- Connected Gemini Notes & Drive Links ---
+        st.markdown("**Connected Documents**")
+        drive_data = st.session_state.get("drive_gemini_results")
+        if drive_data and drive_data.get("status") == "connected":
+            # Gemini meeting notes
+            for note in drive_data.get("gemini_notes", []):
+                title = note.get("title", "Untitled")
+                url = note.get("url", "")
+                date = note.get("date", "")
+                # Shorten long titles for display
+                short_title = title[:60] + "..." if len(title) > 60 else title
+                if url:
+                    st.markdown(f"📝 [{short_title}]({url})")
+                else:
+                    st.caption(f"📝 {short_title}")
+                if date:
+                    st.caption(f"  Modified: {date}")
+
+            # Drive folders
+            for folder in drive_data.get("drive_folders", []):
+                name = folder.get("name", "")
+                url = folder.get("url", "")
+                if url:
+                    st.markdown(f"📂 [{name}]({url})")
+
+            # Extracted specs summary
+            specs = drive_data.get("extracted_specs", {})
+            if specs:
+                st.markdown("---")
+                st.caption("**Extracted from notes:**")
+                for label, key in [
+                    ("Power", "power_circuit_requirements"),
+                    ("Network", "internet_ethernet_access"),
+                    ("Bandwidth", "bandwidth_requirement"),
+                    ("SSO", "sso_provider"),
+                    ("Deployment", "deployment_config"),
+                    ("Mount", "mount_type"),
+                    ("Waiver", "waiver_type"),
+                ]:
+                    if specs.get(key):
+                        st.caption(f"  {label}: {specs[key]}")
+        else:
+            st.caption("No connected documents yet. Click 'Pull from Gmail & Drive' to search.")
 
     # --- POC / Contacts Table ---
     st.markdown("**Points of Contact**")

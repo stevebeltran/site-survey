@@ -556,3 +556,205 @@ def search_gmail_for_contacts(agency_name, city=None):
         result["poc_phone"] = first.get("phone", "")
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Google Drive: Gemini Notes & Folder Search
+# ---------------------------------------------------------------------------
+
+def _get_drive_service():
+    """Build a Google Drive API service using the current user's OAuth credentials."""
+    creds = google_oauth.get_credentials()
+    if not creds:
+        return None
+    return build("drive", "v3", credentials=creds)
+
+
+def _extract_specs_from_snippet(snippet):
+    """Extract infrastructure specs from a Gemini notes content snippet.
+
+    Parses known patterns from meeting notes: power, network, deployment,
+    SSO, bandwidth, site visit dates, etc.
+
+    Returns dict of extracted fields (only populated keys).
+    """
+    specs = {}
+    lower = snippet.lower()
+
+    # Power / electrical
+    power_match = re.search(r'(\d{3})\s*[vV](?:olt)?\s*(?:/|and)?\s*(\d{1,2})\s*[aA](?:mp)?', snippet)
+    if power_match:
+        specs["power_circuit_requirements"] = f"{power_match.group(1)}V / {power_match.group(2)}A Dedicated Circuit"
+
+    # Network / VLAN
+    if "isolated vlan" in lower or "separate vlan" in lower:
+        net = "DHCP on isolated VLAN"
+        if "unrestricted outbound" in lower:
+            net += " (unrestricted outbound)"
+        specs["internet_ethernet_access"] = net
+    elif "dhcp" in lower:
+        specs["internet_ethernet_access"] = "DHCP"
+
+    # Bandwidth
+    bw_match = re.search(r'(\d{3,4})\s*(?:megabit|mbps|meg)', lower)
+    if bw_match:
+        specs["bandwidth_requirement"] = f"{bw_match.group(1)} Mbps"
+
+    # SSO
+    if "azure" in lower and "sso" in lower:
+        specs["sso_provider"] = "Microsoft Azure SSO"
+    elif "microsoft" in lower and ("single sign" in lower or "sso" in lower):
+        specs["sso_provider"] = "Microsoft SSO"
+
+    # Deployment count
+    drone_match = re.search(r'(\d+)\s*(?:total\s*)?drones?\s*(?:and\s*)?(\d+)?\s*(?:docking\s*)?stations?', lower)
+    if drone_match:
+        drones = drone_match.group(1)
+        stations = drone_match.group(2) or drones
+        specs["deployment_config"] = f"{drones} drones / {stations} stations"
+
+    # Rooftop
+    if "rooftop" in lower and ("install" in lower or "deploy" in lower or "station" in lower):
+        specs["mount_type"] = "Rooftop"
+
+    # Part 91
+    if "part 91" in lower:
+        specs["waiver_type"] = "Part 91"
+    elif "part 107" in lower:
+        specs["waiver_type"] = "Part 107"
+
+    return specs
+
+
+def search_drive_for_gemini_notes(agency_name, city=None):
+    """Search Google Drive for Gemini meeting notes and related folders.
+
+    Looks for documents titled "Notes by Gemini" mentioning the agency or city,
+    plus any Drive folders matching the agency name.
+
+    Args:
+        agency_name: e.g. "Zionsville PD" or "St. Louis Metro PD"
+        city: e.g. "Zionsville" (optional, broadens search)
+
+    Returns:
+        dict with keys:
+            gemini_notes: list of {title, url, date, specs}
+            drive_folders: list of {name, url, id}
+            status: "connected", "no_results", or "auth_error"
+            error: error string if auth fails
+    """
+    result = {
+        "gemini_notes": [],
+        "drive_folders": [],
+        "extracted_specs": {},
+        "status": "no_results",
+        "error": "",
+    }
+
+    try:
+        drive = _get_drive_service()
+        if not drive:
+            result["status"] = "auth_error"
+            result["error"] = "Google credentials not available."
+            return result
+    except Exception as e:
+        result["status"] = "auth_error"
+        result["error"] = str(e)
+        return result
+
+    connected = False
+
+    # Build search terms
+    search_terms = [agency_name]
+    if city and city.lower() not in agency_name.lower():
+        search_terms.append(city)
+
+    # Search for Gemini notes documents
+    seen_ids = set()
+    for term in search_terms:
+        # Escape single quotes for the Drive API query
+        escaped = term.replace("'", "\\'")
+        for query in [
+            f"title contains 'Notes by Gemini' and fullText contains '{escaped}' and trashed=false",
+            f"title contains '{escaped}' and title contains 'DFR' and mimeType='application/vnd.google-apps.document' and trashed=false",
+        ]:
+            try:
+                resp = drive.files().list(
+                    q=query,
+                    spaces="drive",
+                    fields="files(id, name, webViewLink, modifiedTime, owners)",
+                    pageSize=10,
+                    orderBy="modifiedTime desc",
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                ).execute()
+                connected = True
+
+                for f in resp.get("files", []):
+                    if f["id"] in seen_ids:
+                        continue
+                    seen_ids.add(f["id"])
+
+                    # Try to extract content snippet for spec parsing
+                    specs = {}
+                    try:
+                        content = drive.files().export(
+                            fileId=f["id"], mimeType="text/plain"
+                        ).execute()
+                        if isinstance(content, bytes):
+                            content = content.decode("utf-8", errors="replace")
+                        specs = _extract_specs_from_snippet(content[:5000])
+                    except Exception:
+                        pass
+
+                    result["gemini_notes"].append({
+                        "title": f.get("name", ""),
+                        "url": f.get("webViewLink", ""),
+                        "date": f.get("modifiedTime", "")[:10],
+                        "specs": specs,
+                    })
+            except Exception as e:
+                err_str = str(e)
+                if "403" in err_str or "401" in err_str:
+                    result["status"] = "auth_error"
+                    result["error"] = err_str
+                    return result
+
+    # Search for agency folders in Drive
+    for term in search_terms:
+        escaped = term.replace("'", "\\'")
+        try:
+            resp = drive.files().list(
+                q=f"name contains '{escaped}' and mimeType='application/vnd.google-apps.folder' and trashed=false",
+                spaces="drive",
+                fields="files(id, name, webViewLink)",
+                pageSize=5,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            ).execute()
+            connected = True
+            for f in resp.get("files", []):
+                if f["id"] not in seen_ids:
+                    seen_ids.add(f["id"])
+                    result["drive_folders"].append({
+                        "name": f.get("name", ""),
+                        "url": f.get("webViewLink", ""),
+                        "id": f["id"],
+                    })
+        except Exception:
+            pass
+
+    # Merge all extracted specs across notes
+    merged_specs = {}
+    for note in result["gemini_notes"]:
+        for k, v in note.get("specs", {}).items():
+            if k not in merged_specs:
+                merged_specs[k] = v
+    result["extracted_specs"] = merged_specs
+
+    if result["gemini_notes"] or result["drive_folders"]:
+        result["status"] = "connected"
+    elif connected:
+        result["status"] = "no_results"
+
+    return result

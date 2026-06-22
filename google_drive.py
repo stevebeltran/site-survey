@@ -174,6 +174,31 @@ class GoogleDriveManager:
 
         return local_path
 
+    def search_files(self, query, max_results=20):
+        """Search Google Drive using a query string.
+
+        Args:
+            query: Drive API query string (e.g. "fullText contains 'agency'")
+            max_results: Maximum number of results to return
+
+        Returns:
+            List of file dicts with id, name, mimeType, webViewLink, modifiedTime
+        """
+        results = self.service.files().list(
+            q=query,
+            spaces='drive',
+            fields='files(id, name, mimeType, webViewLink, modifiedTime, owners)',
+            pageSize=max_results,
+            orderBy='modifiedTime desc',
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
+
+        if results.get('error'):
+            raise ValueError(f"Search failed: {results['error']}")
+
+        return results.get('files', [])
+
     def list_files(self, folder_id, file_type='all'):
         """
         List files in folder.
