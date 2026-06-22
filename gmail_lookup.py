@@ -328,6 +328,58 @@ def _extract_body_contacts(gmail, msg_id):
     return contacts
 
 
+# ---------------------------------------------------------------------------
+# Shared: build broadened search terms for agency + city
+# ---------------------------------------------------------------------------
+_AGENCY_ABBREVS = {
+    "police department": "PD",
+    "sheriff's office": "SO",
+    "sheriffs office": "SO",
+    "fire department": "FD",
+    "public safety": "DPS",
+    "department of public safety": "DPS",
+}
+
+
+def _build_search_terms(agency_name, city=None):
+    """Return a list of search terms ordered broadest-match first.
+
+    Always includes:
+      1. The full agency name  ("West Memphis Police Department")
+      2. An abbreviated form   ("West Memphis PD") — if a known suffix matches
+      3. The city alone        ("West Memphis")    — if provided
+
+    Duplicates are removed while preserving order.
+    """
+    terms = [agency_name]
+
+    # Generate abbreviated variant (e.g. "Police Department" → "PD")
+    lower = agency_name.lower()
+    for suffix, abbrev in _AGENCY_ABBREVS.items():
+        if lower.endswith(suffix):
+            prefix = agency_name[: len(agency_name) - len(suffix)].rstrip()
+            short = f"{prefix} {abbrev}"
+            if short != agency_name:
+                terms.append(short)
+            break
+
+    # Always include city — even when it already appears inside agency_name,
+    # because searching "West Memphis" will match folders named
+    # "West Memphis PD" that the full name would miss.
+    if city:
+        terms.append(city)
+
+    # Deduplicate while keeping order
+    seen = set()
+    unique = []
+    for t in terms:
+        key = t.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(t)
+    return unique
+
+
 def search_gmail_for_contacts(agency_name, city=None):
     """Search Gmail for threads mentioning the agency and extract external contacts.
 
@@ -365,9 +417,7 @@ def search_gmail_for_contacts(agency_name, city=None):
         return result
 
     # Build search queries — look for kickoff calls, invites, and general mentions
-    search_terms = [agency_name]
-    if city and city.lower() not in agency_name.lower():
-        search_terms.append(city)
+    search_terms = _build_search_terms(agency_name, city)
 
     all_contacts = []
     gmail_connected = False
@@ -623,6 +673,25 @@ def _extract_specs_from_snippet(snippet):
     elif "part 107" in lower:
         specs["waiver_type"] = "Part 107"
 
+    # Installation / delivery date — look for "week of <date>", "install date", "installation date",
+    # "delivery date", "target date", "go-live", etc.
+    date_patterns = [
+        r'(?:week\s+of)\s+([A-Z][a-z]+\.?\s+\d{1,2}(?:,?\s*\d{4})?)',
+        r'(?:install(?:ation)?|delivery|target|go[\s-]?live|implementation)\s+(?:date|window|timeframe)?\s*[:\-–]?\s*([A-Z][a-z]+\.?\s+\d{1,2}(?:,?\s*\d{4})?)',
+        r'(?:install(?:ation)?|delivery|target|go[\s-]?live|implementation)\s+(?:date|window|timeframe)?\s*[:\-–]?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})',
+        r'(?:install(?:ation)?|delivery|deploy(?:ment)?)\s+(?:is\s+)?(?:scheduled|planned|set)\s+(?:for\s+)?([A-Z][a-z]+\.?\s+\d{1,2}(?:,?\s*\d{4})?)',
+    ]
+    for pat in date_patterns:
+        m = re.search(pat, snippet, re.IGNORECASE)
+        if m:
+            date_str = m.group(1).strip().rstrip(".")
+            # Prefix with "Week of" if that was the pattern
+            if "week of" in (m.group(0) or "").lower():
+                specs["survey_delivery_target"] = f"Week of {date_str}"
+            else:
+                specs["survey_delivery_target"] = date_str
+            break
+
     return specs
 
 
@@ -664,10 +733,10 @@ def search_drive_for_gemini_notes(agency_name, city=None):
 
     connected = False
 
-    # Build search terms
-    search_terms = [agency_name]
-    if city and city.lower() not in agency_name.lower():
-        search_terms.append(city)
+    # Build search terms — always include city separately so shorter folder
+    # names like "West Memphis PD" match even when the city appears inside
+    # the full agency name "West Memphis Police Department".
+    search_terms = _build_search_terms(agency_name, city)
 
     # Search for Gemini notes documents
     seen_ids = set()

@@ -284,7 +284,7 @@ def _run_connected_docs_search(agency, city=""):
             f"[Drive API] Found {notes_count} Gemini notes, {folders_count} folders for {agency}"
         )
         specs = drive_results.get("extracted_specs", {})
-        for spec_key in ("power_circuit_requirements", "internet_ethernet_access"):
+        for spec_key in ("power_circuit_requirements", "internet_ethernet_access", "survey_delivery_target"):
             if specs.get(spec_key) and not st.session_state.customer_info.get(spec_key):
                 st.session_state.customer_info[spec_key] = specs[spec_key]
         found_any = True
@@ -375,7 +375,7 @@ with st.sidebar:
     st.title("Settings & APIs")
     
     st.subheader("1. Survey Settings")
-    output_dir = "./processed_sites"
+    output_dir = _resolve_app_path("./processed_sites")
     proximity_radius = st.slider("Clustering Proximity (Meters)", min_value=10, max_value=500, value=90)
     
     st.subheader("2. Integrations & Credentials")
@@ -455,8 +455,6 @@ with st.expander("📤 Upload Survey Photos", expanded=not _has_sites):
                         agency = detection["agency_name"]
                         st.session_state.customer_info["agency_name"] = agency
                         st.session_state.customer_info["agency_address"] = reporter._format_short_address(detection.get("address", ""))
-                        # Run full connected docs search (Gmail, Drive, Jira, HubSpot)
-                        _run_connected_docs_search(agency, detection.get("city", ""))
                         break
                 else:
                     st.session_state.gps_detected_agency = {}
@@ -482,9 +480,11 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
     st.session_state._auto_processed = True
 
     with st.status("Processing survey photos...", expanded=True) as status:
+        _step_placeholder = status.empty()
+        _detail_placeholder = status.empty()
         def _update_processing_progress(percent, message):
             status.update(label=f"Processing — {int(percent)}%")
-            status.write(f"⏳ {message}")
+            _detail_placeholder.write(f"⏳ {message}")
 
         try:
             st.session_state.processed_sites = []
@@ -492,7 +492,7 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
             st.session_state.last_click = {}
 
             # Save uploaded files to disk so the processor can read them
-            status.write(f"📂 Saving {len(uploaded_files)} uploaded file(s) to disk...")
+            _step_placeholder.write(f"📂 Saving {len(uploaded_files)} uploaded file(s) to disk...")
             temp_dir = tempfile.mkdtemp(prefix="dfr_ingest_")
             image_paths_for_processing = []
             for uploaded_file in uploaded_files:
@@ -509,7 +509,7 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
             except Exception:
                 pass
 
-            status.write("🔍 Extracting EXIF metadata and clustering by GPS...")
+            _step_placeholder.write("🔍 Extracting EXIF metadata and clustering by GPS...")
             site_data = processor.process_and_organize_images(
                 source_dir=temp_dir,
                 output_dir=output_dir,
@@ -523,12 +523,12 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
             if not site_data:
                 st.warning("No images with GPS metadata were found in the uploaded files.")
 
-            status.write(f"🏗️ Analyzing infrastructure for {len(site_data)} site(s)...")
+            _step_placeholder.write(f"🏗️ Analyzing infrastructure for {len(site_data)} site(s)...")
             for i, site in enumerate(site_data):
                 status.update(label=f"Analyzing site {i+1}/{len(site_data)}")
-                status.write(f"🔎 Site {i+1}: Running infrastructure detection...")
+                _step_placeholder.write(f"🔎 Site {i+1}: Running infrastructure detection...")
                 site["analysis"] = analyzer.analyze_site(site)
-                status.write(f"✈️ Site {i+1}: Querying airspace & airfield data...")
+                _step_placeholder.write(f"✈️ Site {i+1}: Querying airspace & airfield data...")
                 airfield = reporter.query_nearest_airfield(site['latitude'], site['longitude'])
                 site["airfield_info"] = f"{airfield[0]} ({airfield[1]:.2f} miles)" if airfield else "Lookup failed"
                 airspace = reporter.query_airspace_class(site["latitude"], site["longitude"])
@@ -557,7 +557,20 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                     "facilities_engineer": existing.get("facilities_engineer", ""),
                     "facilities_email": existing.get("facilities_email", ""),
                 }
+                # Sync widget keys so text_inputs pick up the new name on rerun
+                st.session_state["_widget_agency_name"] = agency_name
+                st.session_state["_widget_agency_address"] = st.session_state.customer_info["agency_address"]
+                # Update gps_detected_agency to match the final resolved name
+                city = processor.extract_city_from_address(first_address) if first_address else ""
+                st.session_state.gps_detected_agency = {
+                    **st.session_state.get("gps_detected_agency", {}),
+                    "agency_name": agency_name,
+                    "city": city,
+                }
                 _save_session_metadata(site_data)
+
+                # Connected docs search is handled by the auto-trigger after rerun
+                # (see col_c2 auto-trigger block that fires when agency name changes)
 
             # Convert to CandidateSite objects
             st.session_state.candidate_sites = []
@@ -580,7 +593,7 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                 for cs_idx, cs in enumerate(st.session_state.candidate_sites, start=1):
                     status.update(label=f"Enriching site {cs_idx}/{total_cs} with GIS data...")
                     def _gis_progress(step, _idx=cs_idx, _total=total_cs):
-                        status.write(f"🌐 Site {_idx}/{_total}: {step}")
+                        _step_placeholder.write(f"🌐 Site {_idx}/{_total}: {step}")
                     enrich_gis(cs, progress_callback=_gis_progress)
 
             status.update(label="Processing complete!", state="complete", expanded=False)
@@ -763,8 +776,13 @@ with tab1:
     st.subheader("Customer & Agency Information")
     col_c1, col_c2, col_c3 = st.columns([2, 1, 1.5])
     with col_c1:
-        st.session_state.customer_info["agency_name"] = st.text_input("Agency Name", value=st.session_state.customer_info["agency_name"])
-        st.session_state.customer_info["agency_address"] = st.text_input("Agency Address", value=st.session_state.customer_info["agency_address"])
+        # Seed widget keys from customer_info if not yet set
+        if "_widget_agency_name" not in st.session_state:
+            st.session_state["_widget_agency_name"] = st.session_state.customer_info.get("agency_name", "")
+        if "_widget_agency_address" not in st.session_state:
+            st.session_state["_widget_agency_address"] = st.session_state.customer_info.get("agency_address", "")
+        st.session_state.customer_info["agency_name"] = st.text_input("Agency Name", key="_widget_agency_name")
+        st.session_state.customer_info["agency_address"] = st.text_input("Agency Address", key="_widget_agency_address")
     with col_c2:
         st.markdown("")  # spacer to align button with inputs
         st.markdown("")
@@ -772,9 +790,14 @@ with tab1:
             agency = st.session_state.customer_info.get("agency_name", "")
             # Auto-trigger: search when agency name is new/changed
             if agency and agency != st.session_state.get("_last_doc_search_agency", ""):
+                city = st.session_state.get("gps_detected_agency", {}).get("city", "")
+                if not city:
+                    # Derive city from the agency address as fallback
+                    addr = st.session_state.customer_info.get("agency_address", "")
+                    city = processor.extract_city_from_address(addr) if addr else ""
                 with st.status("Auto-pulling contacts & documents...", expanded=True) as pull_status:
                     pull_status.write(f"🔍 Searching for \"{agency}\"...")
-                    _run_connected_docs_search(agency, st.session_state.get("gps_detected_agency", {}).get("city", ""))
+                    _run_connected_docs_search(agency, city)
                     pull_status.update(label="Search complete!", state="complete", expanded=False)
                 st.rerun()
 
@@ -821,6 +844,7 @@ with tab1:
                 st.markdown("---")
                 st.caption("**Extracted from notes:**")
                 for label, key in [
+                    ("Install Target", "survey_delivery_target"),
                     ("Power", "power_circuit_requirements"),
                     ("Network", "internet_ethernet_access"),
                     ("Bandwidth", "bandwidth_requirement"),
@@ -884,12 +908,21 @@ with tab1:
 
     # --- POC / Contacts Table ---
     st.markdown("**Points of Contact**")
+    # Counter for generating unique row IDs (survives reruns)
+    if "_poc_uid_counter" not in st.session_state:
+        st.session_state._poc_uid_counter = 0
+
+    def _next_poc_uid():
+        st.session_state._poc_uid_counter += 1
+        return st.session_state._poc_uid_counter
+
     # Initialize editable contacts from session state
     if "poc_rows" not in st.session_state:
         st.session_state.poc_rows = []
         # Seed from existing customer_info if present
         if st.session_state.customer_info.get("poc_name") or st.session_state.customer_info.get("poc_email"):
             st.session_state.poc_rows.append({
+                "_uid": _next_poc_uid(),
                 "role": "POC",
                 "name": st.session_state.customer_info.get("poc_name", ""),
                 "email": st.session_state.customer_info.get("poc_email", ""),
@@ -898,6 +931,7 @@ with tab1:
             })
         if st.session_state.customer_info.get("it_director") or st.session_state.customer_info.get("it_email"):
             st.session_state.poc_rows.append({
+                "_uid": _next_poc_uid(),
                 "role": "IT",
                 "name": st.session_state.customer_info.get("it_director", ""),
                 "email": st.session_state.customer_info.get("it_email", ""),
@@ -913,6 +947,7 @@ with tab1:
             c_email_lower = c["email"].lower()
             if c_email_lower not in existing_emails:
                 st.session_state.poc_rows.append({
+                    "_uid": _next_poc_uid(),
                     "role": "",
                     "name": c.get("name", ""),
                     "email": c["email"],
@@ -930,9 +965,13 @@ with tab1:
                             row["phone"] = c["phone"]
                         break
 
-    # Render editable rows
-    role_options = ["", "POC", "IT", "Facilities", "Other"]
+    # Render editable rows — keyed by stable _uid, not loop index
+    role_options = ["", "POC", "IT", "Facilities", "RTCC", "Radio Shop", "Other"]
     rows_to_remove = []
+    # Backfill _uid for any legacy rows that lack one
+    for row in st.session_state.poc_rows:
+        if "_uid" not in row:
+            row["_uid"] = _next_poc_uid()
     if st.session_state.poc_rows:
         hc1, hc2, hc3, hc4, hc5, hc6 = st.columns([1, 1.8, 1.8, 1.8, 1.5, 0.5])
         hc1.caption("Role")
@@ -942,48 +981,56 @@ with tab1:
         hc5.caption("Phone")
         hc6.caption("")
     for i, row in enumerate(st.session_state.poc_rows):
+        uid = row["_uid"]
         rc1, rc2, rc3, rc4, rc5, rc6 = st.columns([1, 1.8, 1.8, 1.8, 1.5, 0.5])
         with rc1:
             st.session_state.poc_rows[i]["role"] = st.selectbox(
                 "Role", role_options, index=role_options.index(row["role"]) if row["role"] in role_options else 0,
-                key=f"poc_role_{i}", label_visibility="collapsed",
+                key=f"poc_role_{uid}", label_visibility="collapsed",
             )
         with rc2:
             st.session_state.poc_rows[i]["name"] = st.text_input(
-                "Name", value=row["name"], key=f"poc_name_{i}", label_visibility="collapsed",
+                "Name", value=row["name"], key=f"poc_name_{uid}", label_visibility="collapsed",
                 placeholder="Name",
             )
         with rc3:
             st.session_state.poc_rows[i]["title"] = st.text_input(
-                "Title", value=row.get("title", ""), key=f"poc_title_{i}", label_visibility="collapsed",
+                "Title", value=row.get("title", ""), key=f"poc_title_{uid}", label_visibility="collapsed",
                 placeholder="Title / Rank",
             )
         with rc4:
             st.session_state.poc_rows[i]["email"] = st.text_input(
-                "Email", value=row["email"], key=f"poc_email_{i}", label_visibility="collapsed",
+                "Email", value=row["email"], key=f"poc_email_{uid}", label_visibility="collapsed",
                 placeholder="Email",
             )
         with rc5:
             st.session_state.poc_rows[i]["phone"] = st.text_input(
-                "Phone", value=row.get("phone", ""), key=f"poc_phone_{i}", label_visibility="collapsed",
+                "Phone", value=row.get("phone", ""), key=f"poc_phone_{uid}", label_visibility="collapsed",
                 placeholder="Phone",
             )
         with rc6:
-            if st.button("✕", key=f"poc_del_{i}"):
+            if st.button("✕", key=f"poc_del_{uid}"):
                 rows_to_remove.append(i)
 
-    # Process removals
+    # Process removals — clean up widget state for removed rows
     if rows_to_remove:
-        st.session_state.poc_rows = [r for idx, r in enumerate(st.session_state.poc_rows) if idx not in rows_to_remove]
+        for idx in sorted(rows_to_remove, reverse=True):
+            removed_uid = st.session_state.poc_rows[idx]["_uid"]
+            # Remove stale widget keys so they don't ghost on rerun
+            for prefix in ("poc_role_", "poc_name_", "poc_title_", "poc_email_", "poc_phone_", "poc_del_"):
+                st.session_state.pop(f"{prefix}{removed_uid}", None)
+            st.session_state.poc_rows.pop(idx)
         st.rerun()
 
     if st.button("＋ Add Contact", key="add_poc_row"):
-        st.session_state.poc_rows.append({"role": "", "name": "", "email": "", "title": "", "phone": ""})
+        st.session_state.poc_rows.append({"_uid": _next_poc_uid(), "role": "", "name": "", "email": "", "title": "", "phone": ""})
         st.rerun()
 
     # Sync the POC table back to customer_info for report generation
     # Clear first so removed/changed rows take effect
-    for k in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email", "facilities_engineer", "facilities_email"):
+    for k in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email",
+              "facilities_engineer", "facilities_email", "rtcc_name", "rtcc_email",
+              "radio_shop_name", "radio_shop_email"):
         st.session_state.customer_info[k] = ""
     for row in st.session_state.poc_rows:
         role = row.get("role", "")
@@ -997,6 +1044,12 @@ with tab1:
         elif role == "Facilities" and not st.session_state.customer_info["facilities_engineer"]:
             st.session_state.customer_info["facilities_engineer"] = row["name"]
             st.session_state.customer_info["facilities_email"] = row["email"]
+        elif role == "RTCC" and not st.session_state.customer_info["rtcc_name"]:
+            st.session_state.customer_info["rtcc_name"] = row["name"]
+            st.session_state.customer_info["rtcc_email"] = row["email"]
+        elif role == "Radio Shop" and not st.session_state.customer_info["radio_shop_name"]:
+            st.session_state.customer_info["radio_shop_name"] = row["name"]
+            st.session_state.customer_info["radio_shop_email"] = row["email"]
 
     # --- Deployment Specifications ---
     st.markdown("**Deployment Specifications**")
@@ -1018,6 +1071,42 @@ with tab1:
             "Internet / Ethernet Access",
             value=st.session_state.customer_info.get("internet_ethernet_access", ""),
             placeholder="e.g. DHCP on isolated VLAN",
+        )
+
+    # Row 2: Contractors & PM
+    ds4, ds5, ds6 = st.columns(3)
+    with ds4:
+        st.session_state.customer_info["crane_contractor"] = st.text_input(
+            "Crane Contractor",
+            value=st.session_state.customer_info.get("crane_contractor", ""),
+            placeholder="e.g. Pending crane company",
+        )
+    with ds5:
+        st.session_state.customer_info["tower_climber_contractor"] = st.text_input(
+            "Tower Climber Contractor",
+            value=st.session_state.customer_info.get("tower_climber_contractor", ""),
+            placeholder="e.g. DNA",
+        )
+    with ds6:
+        st.session_state.customer_info["brinc_pm"] = st.text_input(
+            "BRINC Project Manager",
+            value=st.session_state.customer_info.get("brinc_pm", ""),
+            placeholder="e.g. steven.beltran@brincdrones.com",
+        )
+
+    # Row 3: Follow-up & Action Items
+    ds7, ds8 = st.columns(2)
+    with ds7:
+        st.session_state.customer_info["follow_up_requirements"] = st.text_input(
+            "Follow-up Requirements",
+            value=st.session_state.customer_info.get("follow_up_requirements", ""),
+            placeholder="e.g. Infrastructure for site needs to be completed",
+        )
+    with ds8:
+        st.session_state.customer_info["action_items"] = st.text_input(
+            "Action Items",
+            value=st.session_state.customer_info.get("action_items", ""),
+            placeholder="e.g. Confirm ethernet and power 30 days before install",
         )
 
     st.divider()

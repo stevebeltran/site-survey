@@ -212,10 +212,18 @@ def estimate_building_height_gemini(image_path, api_key=None):
         return None
 
 
-def enrich_gis(site, skip_nominatim=False):
+def enrich_gis(site, skip_nominatim=False, progress_callback=None):
     """Enrich a CandidateSite with free GIS data.
     Populates: county, state, zip, elevation, airport/heliport distances, building height.
-    Gracefully degrades — any API failure leaves the field as None."""
+    Gracefully degrades — any API failure leaves the field as None.
+
+    Args:
+        progress_callback: Optional callable(step_name: str) called before each API step.
+    """
+    def _progress(step):
+        if progress_callback:
+            progress_callback(step)
+
     lat = site.identity.site_latitude
     lon = site.identity.site_longitude
     if lat is None or lon is None:
@@ -223,6 +231,7 @@ def enrich_gis(site, skip_nominatim=False):
 
     # ── Nominatim reverse geocode ──
     if not skip_nominatim:
+        _progress("Reverse geocoding address...")
         try:
             resp = requests.get(
                 "https://nominatim.openstreetmap.org/reverse",
@@ -255,6 +264,7 @@ def enrich_gis(site, skip_nominatim=False):
             site.checklist_provenance["JURISDICTION"] = "failed"
 
     # ── Open-Elevation API ──
+    _progress("Looking up elevation...")
     try:
         resp = requests.get(
             "https://api.open-elevation.com/api/v1/lookup",
@@ -271,6 +281,7 @@ def enrich_gis(site, skip_nominatim=False):
         site.checklist_provenance["SITE_ELEVATION"] = "failed"
 
     # ── Gemini Flash: building height from photo ──
+    _progress("Estimating building height...")
     if site.structure.building_height is None:
         overview_photos = [p for p in site.photos if p.category == "Site" and
                           any(kw in p.photo_id.lower() for kw in ["overview", "front", "building"])]
@@ -285,6 +296,7 @@ def enrich_gis(site, skip_nominatim=False):
                     site.checklist_provenance["BUILDING_HEIGHT"] = "auto"
 
     # ── Overpass: building height from OSM (fallback) ──
+    _progress("Querying OSM building data...")
     if site.structure.building_height is None:
         try:
             bldg_query = f"""
@@ -320,6 +332,7 @@ def enrich_gis(site, skip_nominatim=False):
             site.checklist_provenance["BUILDING_HEIGHT"] = site.checklist_provenance.get("BUILDING_HEIGHT") or "failed"
 
     # ── Overpass: airport and heliport distances ──
+    _progress("Searching for nearby airports & heliports...")
     try:
         overpass_query = f"""
         [out:json][timeout:10];

@@ -49,11 +49,21 @@ def _format_short_address(full_address):
         and 'parish' not in p.lower()
     ]
 
-    # Drop leading POI/business name when followed by a house number
-    if (len(filtered) >= 2
-            and not filtered[0][0].isdigit()
-            and filtered[1].strip().isdigit()):
-        filtered = filtered[1:]
+    # Drop leading POI/building name (e.g. "Polk Avenue Police Department")
+    if len(filtered) >= 2 and not filtered[0][0].isdigit():
+        first_lower = filtered[0].lower()
+        poi_suffixes = (
+            'police department', 'fire department', 'fire station',
+            'city hall', 'courthouse', 'school', 'university',
+            'hospital', 'library', 'church', 'center', 'centre',
+            'office', 'building', 'station', 'academy', 'institute',
+        )
+        is_poi = any(first_lower.endswith(suffix) for suffix in poi_suffixes)
+        # Also treat as POI if followed by a street address (starts with digit)
+        if not is_poi and filtered[1].strip()[:1].isdigit():
+            is_poi = True
+        if is_poi:
+            filtered = filtered[1:]
 
     # Merge house number + street name  ("1075", "Parkway Drive" -> "1075 Parkway Drive")
     combined = []
@@ -681,14 +691,22 @@ def add_styled_table(doc, data, headers):
 
     doc.add_paragraph()
 
-def generate_word_report(site_data_list, output_filepath, customer_info=None, drive_manager=None, drive_reports_folder_id=None):
+def generate_word_report(site_data_list, output_filepath, customer_info=None, drive_manager=None, drive_reports_folder_id=None, progress_callback=None):
     """
     Generate the Site Survey Word Document.
     site_data_list items contain pre-populated 'agency_name' field from processor.
 
     If drive_manager and drive_reports_folder_id are provided, the report
     will also be uploaded to Google Drive.
+
+    Args:
+        progress_callback: Optional callable(step_name: str) called before each major step.
     """
+    def _progress(step):
+        if progress_callback:
+            progress_callback(step)
+
+    _progress("Initializing report document...")
     doc = Document()
 
     style = doc.styles['Normal']
@@ -725,6 +743,7 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
     agency_run.font.color.rgb = RGBColor(100, 100, 100)
     
     # 1. Map Visualisation Section
+    _progress("Generating site map visualization...")
     doc.add_paragraph().add_run("Site Detail & Map Visualisation").bold = True
     map_image_path = os.path.join(os.path.dirname(output_filepath), "dfr_site_map.png")
     draw_styled_map(site_data_list, map_image_path)
@@ -740,17 +759,24 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
     contact_data = [
         ("Agency Name & Address", f"{customer_info.get('agency_name')}\n{customer_info.get('agency_address')}"),
         ("Point of Contact (POC)", f"{customer_info.get('poc_name')} | {customer_info.get('poc_email')} | {customer_info.get('poc_phone')}"),
+        ("RTCC/RTIC", f"{customer_info.get('rtcc_name', 'DNA')} | {customer_info.get('rtcc_email', '')}".rstrip(" |")),
         ("Information Technology (IT)", f"{customer_info.get('it_director')} | {customer_info.get('it_email')}"),
-        ("Facilities Engineer", f"{customer_info.get('facilities_engineer')} | {customer_info.get('facilities_email')}")
+        ("Facilities Engineer", f"{customer_info.get('facilities_engineer')} | {customer_info.get('facilities_email')}"),
+        ("Radio Shop Engineer", f"{customer_info.get('radio_shop_name', 'DNA')} | {customer_info.get('radio_shop_email', '')}".rstrip(" |")),
+        ("Crane Contractor", customer_info.get("crane_contractor", "DNA")),
+        ("Tower Climber Contractor", customer_info.get("tower_climber_contractor", "DNA")),
+        ("BRINC Project Manager", customer_info.get("brinc_pm", "")),
     ]
     add_styled_table(doc, contact_data, ["CONTACT INFORMATION", "NOTES / VALUE"])
-    
+
     # 3. Installation Timeframe
     delivery_target = customer_info.get("survey_delivery_target", "TBD")
+    follow_up = customer_info.get("follow_up_requirements", "") or "Infrastructure checklist completion prior to hardware delivery"
+    action_items = customer_info.get("action_items", "") or "Confirm ethernet and dedicated power connectivity is established 30 days before installation."
     timeframe_data = [
         ("Survey / Delivery Target", delivery_target),
-        ("Follow up requirements", "Infrastructure checklist completion prior to hardware delivery"),
-        ("Action items", "Confirm ethernet and dedicated power connectivity is established 30 days before installation.")
+        ("Follow up requirements", follow_up),
+        ("Action items", action_items),
     ]
     add_styled_table(doc, timeframe_data, ["INSTALLATION TIMEFRAME", "NOTES / VALUE"])
     
@@ -758,6 +784,7 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
     
     # 4. Loop through individual site nodes
     for idx, site in enumerate(site_data_list):
+        _progress(f"Building site {idx+1}/{len(site_data_list)}: {site['address'].split(',')[0]}...")
         site_name = site['address'].split(',')[0]
         analysis = site.get('analysis', {})
         # Note: Each site includes pre-populated 'agency_name' and 'city' fields from processor
@@ -819,6 +846,7 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
         # Add ONLY selected images
         selected_images = [img for img in site.get('images', []) if img.get('selected_for_report', True)]
         if selected_images:
+            _progress(f"Embedding {len(selected_images)} photo(s) for site {idx+1}...")
             p_photos = doc.add_paragraph()
             p_photos.add_run("Survey Photos & Visual Evidence").bold = True
             for img in selected_images:
@@ -833,10 +861,12 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
                     
         doc.add_page_break()
         
+    _progress("Saving report document...")
     doc.save(output_filepath)
 
     # If using Google Drive, upload report
     if drive_manager and drive_reports_folder_id:
+        _progress("Uploading report to Google Drive...")
         try:
             report_filename = os.path.basename(output_filepath)
             drive_manager.upload_file(
@@ -861,7 +891,8 @@ def _yn(value):
 
 def generate_candidate_site_report(candidate_sites, output_filepath,
                                     customer_info=None, drive_manager=None,
-                                    drive_reports_folder_id=None):
+                                    drive_reports_folder_id=None,
+                                    progress_callback=None):
     """Generate a dynamic DOCX report from CandidateSite objects.
 
     Report structure:
@@ -869,11 +900,19 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
     2. Candidate Site sections (1-N, dynamic)
     3. Installer Quick Reference (1 page per site)
     4. Annotated Photo Appendix
+
+    Args:
+        progress_callback: Optional callable(step_name: str) called before each major step.
     """
     from docx import Document
     from docx.shared import Inches, Pt, RGBColor
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 
+    def _progress(step):
+        if progress_callback:
+            progress_callback(step)
+
+    _progress("Initializing report document...")
     doc = Document()
     style = doc.styles["Normal"]
     font = style.font
@@ -902,6 +941,7 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
 
     # ── 2. Candidate Site Sections ──
     for idx, site in enumerate(candidate_sites, start=1):
+        _progress(f"Building site {idx}/{len(candidate_sites)}: {site.identity.site_name}...")
         doc.add_heading(f"Candidate Site {idx}: {site.identity.site_name}", level=1)
 
         # 2a. Site Overview
@@ -918,6 +958,7 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
         add_styled_table(doc, overview_data, ["Field", "Value"])
 
         # 2b. Site Photos by Category
+        _progress(f"Embedding photos for site {idx}...")
         doc.add_heading("Site Photos", level=2)
         for cat in ["Site", "Installation", "Infrastructure", "RF", "Access"]:
             cat_photos = [p for p in site.photos if p.category == cat and p.selected_for_report]
@@ -1033,6 +1074,7 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
         doc.add_page_break()
 
     # ── 3. Installer Quick Reference ──
+    _progress("Building installer quick reference...")
     doc.add_heading("Installer Quick Reference", level=1)
     for idx, site in enumerate(candidate_sites, start=1):
         doc.add_heading(f"Site {idx}: {site.identity.site_name}", level=2)
@@ -1052,6 +1094,7 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
         doc.add_page_break()
 
     # ── 4. Annotated Photo Appendix ──
+    _progress("Adding annotated photo appendix...")
     doc.add_heading("Annotated Photo Appendix", level=1)
     has_annotations = False
     for idx, site in enumerate(candidate_sites, start=1):
@@ -1069,9 +1112,11 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
     if not has_annotations:
         doc.add_paragraph("No annotated engineering layouts available.")
 
+    _progress("Saving report document...")
     doc.save(output_filepath)
 
     if drive_manager and drive_reports_folder_id:
+        _progress("Uploading report to Google Drive...")
         try:
             drive_manager.upload_file(output_filepath, drive_reports_folder_id)
         except Exception:

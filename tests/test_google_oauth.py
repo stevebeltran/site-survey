@@ -54,6 +54,7 @@ class TestGetCredentials:
                 "client_id": "client-id",
                 "client_secret": "client-secret",
                 "scopes": ["openid", "email"],
+                "expiry": "2099-01-01T00:00:00+00:00",
             }
         }
         result = get_credentials()

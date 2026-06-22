@@ -6,13 +6,17 @@ the user's domain, and storing/refreshing credentials in st.session_state.
 """
 
 import json
+import logging
 import os
+from datetime import datetime, timezone
 from urllib.parse import urlencode
 
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 import streamlit as st
+
+_log = logging.getLogger(__name__)
 
 SCOPES = [
     "openid",
@@ -48,6 +52,8 @@ def _load_token_from_disk():
     """Load token data from disk into session state if session state is empty."""
     if st.session_state.get(_TOKEN_KEY):
         return  # Already populated
+    if not os.path.exists(_TOKEN_FILE):
+        return
     try:
         with open(_TOKEN_FILE, "r") as f:
             payload = json.load(f)
@@ -56,7 +62,7 @@ def _load_token_from_disk():
         if email:
             st.session_state[_EMAIL_KEY] = email
     except Exception:
-        pass  # File missing or corrupt — nothing to restore
+        _log.warning("Failed to load OAuth token from %s", _TOKEN_FILE, exc_info=True)
 
 
 def _delete_token_file():
@@ -189,6 +195,8 @@ def handle_callback():
             "client_secret": creds.client_secret,
             "scopes": list(creds.scopes),
         }
+        if creds.expiry:
+            token_data["expiry"] = creds.expiry.isoformat()
         st.session_state[_TOKEN_KEY] = token_data
         st.session_state[_EMAIL_KEY] = user_email
         _save_token_to_disk(token_data, user_email)
@@ -205,7 +213,8 @@ def get_credentials():
     """Return the current user's OAuth credentials, or None.
 
     If the access token is expired and a refresh token exists, silently
-    refreshes. If refresh fails, clears stored credentials and returns None.
+    refreshes. If refresh fails, clears session state but preserves the
+    token file on disk so the next page load can retry.
 
     Returns:
         google.oauth2.credentials.Credentials or None
@@ -217,34 +226,55 @@ def get_credentials():
     if not token_data:
         return None
 
+    # Parse stored expiry so the library can detect expired tokens
+    expiry = None
+    expiry_str = token_data.get("expiry")
+    if expiry_str:
+        try:
+            expiry = datetime.fromisoformat(expiry_str)
+            # google-auth internally compares with a naive UTC datetime,
+            # so strip tzinfo to avoid naive-vs-aware TypeError.
+            if expiry.tzinfo is not None:
+                expiry = expiry.replace(tzinfo=None)
+        except (ValueError, TypeError):
+            pass
+
     creds = Credentials(
-        token=token_data["token"],
+        token=token_data.get("token"),
         refresh_token=token_data.get("refresh_token"),
         token_uri=token_data.get("token_uri"),
         client_id=token_data.get("client_id"),
         client_secret=token_data.get("client_secret"),
         scopes=token_data.get("scopes"),
+        expiry=expiry,
     )
 
-    if creds.valid:
+    # If we have a known-valid, non-expired token, use it immediately
+    if creds.valid and expiry is not None:
         return creds
 
-    if creds.expired and creds.refresh_token:
+    # Token needs refresh: either expired, or no expiry stored (legacy file)
+    if creds.refresh_token:
         try:
             creds.refresh(Request())
-            # Update stored token with refreshed values
-            st.session_state[_TOKEN_KEY]["token"] = creds.token
-            _save_token_to_disk(st.session_state[_TOKEN_KEY],
+            # Update stored token with refreshed access token and expiry
+            token_data["token"] = creds.token
+            if creds.expiry:
+                token_data["expiry"] = creds.expiry.isoformat()
+            st.session_state[_TOKEN_KEY] = token_data
+            _save_token_to_disk(token_data,
                                 st.session_state.get(_EMAIL_KEY, ""))
             return creds
         except Exception:
-            # Refresh failed — clear everything
+            _log.warning("OAuth token refresh failed", exc_info=True)
+            # Clear session state so the sidebar shows Connect button,
+            # but KEEP the token file — the refresh_token may still be
+            # valid and a future page load can retry.
             st.session_state.pop(_TOKEN_KEY, None)
             st.session_state.pop(_EMAIL_KEY, None)
-            _delete_token_file()
             return None
 
-    # No refresh token and token invalid — clear
+    # No refresh token at all — token file is useless, remove it
     st.session_state.pop(_TOKEN_KEY, None)
     st.session_state.pop(_EMAIL_KEY, None)
     _delete_token_file()
