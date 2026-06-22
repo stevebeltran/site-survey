@@ -1,0 +1,127 @@
+{
+  "analyzer.py": {
+    "mtime": 1782136472.399,
+    "ast_hash": "88a8c9e3b38914b63ea03aa43ceec390",
+    "semantic_hash": ""
+  },
+  "dashboard.py": {
+    "mtime": 1782136678.105,
+    "ast_hash": "80b1ecf7b60802c41f24de7452561eda",
+    "semantic_hash": ""
+  },
+  "gmail_lookup.py": {
+    "mtime": 1781997968.805,
+    "ast_hash": "5b954d818bc30ed24c9fef1300436a7a",
+    "semantic_hash": ""
+  },
+  "google_drive.py": {
+    "mtime": 1781973748.111,
+    "ast_hash": "ff3ecbf353a00f865ff697a31684fced",
+    "semantic_hash": "ff3ecbf353a00f865ff697a31684fced"
+  },
+  "google_oauth.py": {
+    "mtime": 1782073453.567,
+    "ast_hash": "38b3aacf34face4718ecdfec5177dae7",
+    "semantic_hash": ""
+  },
+  "main.py": {
+    "mtime": 1781486940.093,
+    "ast_hash": "519ae701247b5d5047eb27efb95665b2",
+    "semantic_hash": "519ae701247b5d5047eb27efb95665b2"
+  },
+  "processor.py": {
+    "mtime": 1782136509.015,
+    "ast_hash": "1f8766af4ddc2698faf9778dd00a38ae",
+    "semantic_hash": ""
+  },
+  "reporter.py": {
+    "mtime": 1782136577.514,
+    "ast_hash": "b986eaf4357699008fe3223c5138a1ff",
+    "semantic_hash": ""
+  },
+  "tests/__init__.py": {
+    "mtime": 1781791121.88,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "tests/test_google_oauth.py": {
+    "mtime": 1782073008.7,
+    "ast_hash": "819d58f05ebeeb32672947ee260957d2",
+    "semantic_hash": ""
+  },
+  "tests/test_pipeline.py": {
+    "mtime": 1781897326.989,
+    "ast_hash": "13026f2ed8f59220219956d63e3769ca",
+    "semantic_hash": "13026f2ed8f59220219956d63e3769ca"
+  },
+  "tests/test_processor.py": {
+    "mtime": 1781791407.276,
+    "ast_hash": "8bfb65881858e1c6f98195f982e9f2ec",
+    "semantic_hash": "8bfb65881858e1c6f98195f982e9f2ec"
+  },
+  "pages/Privacy_Policy.py": {
+    "mtime": 1782017825.009,
+    "ast_hash": "d11d5aba94266ec19a08673a7c46ae7a",
+    "semantic_hash": ""
+  },
+  "pages/Terms_of_Service.py": {
+    "mtime": 1782017838.722,
+    "ast_hash": "d16e74df974d29dcc1c96b5fd106cff5",
+    "semantic_hash": ""
+  },
+  "site_model.py": {
+    "mtime": 1782136552.733,
+    "ast_hash": "ffe52279e4d86ffe6038c633c7f33eb3",
+    "semantic_hash": ""
+  },
+  "tests/test_clustering.py": {
+    "mtime": 1782021764.719,
+    "ast_hash": "fd5e47e6e09adc8dfdd77543f1ca1f97",
+    "semantic_hash": ""
+  },
+  "tests/test_gis_enrichment.py": {
+    "mtime": 1782021463.829,
+    "ast_hash": "d53dd89066935997b6261b4c1fe4bd69",
+    "semantic_hash": ""
+  },
+  "tests/test_report_dynamic.py": {
+    "mtime": 1782021893.047,
+    "ast_hash": "a324845cc02b9fc9acef1b66ac70ebd3",
+    "semantic_hash": ""
+  },
+  "tests/test_site_model.py": {
+    "mtime": 1782022006.324,
+    "ast_hash": "03b5b0d97889822838d55fe72b42e003",
+    "semantic_hash": ""
+  },
+  "AGENTS.md": {
+    "mtime": 1781477082.401,
+    "ast_hash": "8b65c17283f6cd1a385e3d3d605bb349",
+    "semantic_hash": ""
+  },
+  "CLAUDE.md": {
+    "mtime": 1781997526.748,
+    "ast_hash": "514b7b299fa549c234339fc79ba40112",
+    "semantic_hash": ""
+  },
+  "packages.txt": {
+    "mtime": 1782007707.895,
+    "ast_hash": "7a236590ccd0e6821e2fa1c3918c14bc",
+    "semantic_hash": ""
+  },
+  "requirements.txt": {
+    "mtime": 1782021472.692,
+    "ast_hash": "745b4328d4e737f2cfdefe86fbaa57e4",
+    "semantic_hash": ""
+  },
+  "images/BRINC_Logo_White.png": {
+    "mtime": 1772717036.854,
+    "ast_hash": "2ef15bb9706332b0b39839a1a91854d2",
+    "semantic_hash": ""
+  },
+  "images/station_overlay.png": {
+    "mtime": 1781788685.698,
+    "ast_hash": "ac964fd7691f7ee08cbda1de5082466d",
+    "semantic_hash": ""
+  }
+}

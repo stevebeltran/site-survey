@@ -1,0 +1,428 @@
+{
+  "communities": {
+    "0": [
+      "processor",
+      "processor_cluster_images",
+      "processor_derive_department_folder_name",
+      "processor_exifread_ratio_to_float",
+      "processor_extract_city_from_address",
+      "processor_extract_exif_gps",
+      "processor_extract_gps_with_exifread",
+      "processor_get_decimal_from_dms",
+      "processor_parse_exifread_dms",
+      "processor_process_and_organize_images",
+      "processor_rationale_142",
+      "processor_rationale_181",
+      "processor_rationale_23",
+      "processor_rationale_267",
+      "processor_rationale_31",
+      "processor_rationale_327",
+      "processor_rationale_42",
+      "processor_rationale_84",
+      "processor_rationale_95",
+      "processor_reverse_geocode",
+      "processor_sanitize_folder_name",
+      "tests_test_processor",
+      "tests_test_processor_rationale_10",
+      "tests_test_processor_rationale_13",
+      "tests_test_processor_rationale_152",
+      "tests_test_processor_rationale_155",
+      "tests_test_processor_rationale_172",
+      "tests_test_processor_rationale_187",
+      "tests_test_processor_rationale_19",
+      "tests_test_processor_rationale_25",
+      "tests_test_processor_rationale_31",
+      "tests_test_processor_rationale_38",
+      "tests_test_processor_rationale_44",
+      "tests_test_processor_rationale_50",
+      "tests_test_processor_rationale_56",
+      "tests_test_processor_rationale_62",
+      "tests_test_processor_testendtoendpipeline",
+      "tests_test_processor_testendtoendpipeline_test_different_city_formats",
+      "tests_test_processor_testendtoendpipeline_test_pipeline_handles_geocoding_failure",
+      "tests_test_processor_testendtoendpipeline_test_pipeline_produces_agency_name",
+      "tests_test_processor_testextractcityfromaddress",
+      "tests_test_processor_testextractcityfromaddress_test_address_with_road_name_only",
+      "tests_test_processor_testextractcityfromaddress_test_address_without_city_component",
+      "tests_test_processor_testextractcityfromaddress_test_city_with_multiword_name",
+      "tests_test_processor_testextractcityfromaddress_test_city_with_special_characters",
+      "tests_test_processor_testextractcityfromaddress_test_coordinate_only_fallback",
+      "tests_test_processor_testextractcityfromaddress_test_empty_string",
+      "tests_test_processor_testextractcityfromaddress_test_malformed_address",
+      "tests_test_processor_testextractcityfromaddress_test_none_input",
+      "tests_test_processor_testextractcityfromaddress_test_standard_us_address_format"
+    ],
+    "1": [
+      "gmail_lookup_get_gmail_service",
+      "gmail_lookup_rationale_29",
+      "google_drive_googledrivemanager",
+      "google_drive_googledrivemanager_download_file",
+      "google_drive_googledrivemanager_get_or_create_folder",
+      "google_drive_googledrivemanager_init",
+      "google_drive_googledrivemanager_list_files",
+      "google_drive_googledrivemanager_upload_bytes",
+      "google_drive_googledrivemanager_upload_file",
+      "google_drive_rationale_122",
+      "google_drive_rationale_14",
+      "google_drive_rationale_153",
+      "google_drive_rationale_17",
+      "google_drive_rationale_178",
+      "google_drive_rationale_39",
+      "google_drive_rationale_87",
+      "google_oauth_get_user_email",
+      "google_oauth_rationale_251",
+      "tests_test_google_oauth",
+      "tests_test_google_oauth_rationale_112",
+      "tests_test_google_oauth_rationale_128",
+      "tests_test_google_oauth_rationale_150",
+      "tests_test_google_oauth_testdrivemanageroauth",
+      "tests_test_google_oauth_testdrivemanageroauth_test_init_with_credentials_object",
+      "tests_test_google_oauth_testdrivemanageroauth_test_init_with_json_string_still_works",
+      "tests_test_google_oauth_testgetuseremail",
+      "tests_test_google_oauth_testgetuseremail_test_returns_email_when_stored",
+      "tests_test_google_oauth_testgetuseremail_test_returns_none_when_not_stored",
+      "tests_test_google_oauth_testgmailserviceintegration",
+      "tests_test_google_oauth_testgmailserviceintegration_test_get_gmail_service_returns_none_when_not_authenticated",
+      "tests_test_google_oauth_testgmailserviceintegration_test_get_gmail_service_uses_oauth"
+    ],
+    "2": [
+      "google_oauth",
+      "google_oauth_delete_token_file",
+      "google_oauth_get_auth_url",
+      "google_oauth_get_client_config",
+      "google_oauth_get_credentials",
+      "google_oauth_get_redirect_uri",
+      "google_oauth_handle_callback",
+      "google_oauth_is_authenticated",
+      "google_oauth_load_token_from_disk",
+      "google_oauth_rationale_1",
+      "google_oauth_rationale_118",
+      "google_oauth_rationale_142",
+      "google_oauth_rationale_204",
+      "google_oauth_rationale_256",
+      "google_oauth_rationale_280",
+      "google_oauth_rationale_36",
+      "google_oauth_rationale_48",
+      "google_oauth_rationale_63",
+      "google_oauth_rationale_75",
+      "google_oauth_rationale_91",
+      "google_oauth_render_connect_button",
+      "google_oauth_save_token_to_disk",
+      "tests_test_google_oauth_rationale_34",
+      "tests_test_google_oauth_testgetcredentials",
+      "tests_test_google_oauth_testgetcredentials_test_clears_session_on_refresh_failure",
+      "tests_test_google_oauth_testgetcredentials_test_refreshes_expired_token",
+      "tests_test_google_oauth_testgetcredentials_test_returns_credentials_when_stored",
+      "tests_test_google_oauth_testgetcredentials_test_returns_none_when_no_session"
+    ],
+    "3": [
+      "dashboard",
+      "dashboard_detect_agency_from_gps",
+      "dashboard_extract_town_state_from_address",
+      "dashboard_get_displayable_image_path",
+      "dashboard_logo_b64",
+      "dashboard_lookup_contacts_from_gmail",
+      "dashboard_on_files_changed",
+      "dashboard_rationale_133",
+      "dashboard_rationale_141",
+      "dashboard_rationale_159",
+      "dashboard_rationale_176",
+      "dashboard_rationale_203",
+      "dashboard_rationale_229",
+      "dashboard_rationale_298",
+      "dashboard_resolve_app_path",
+      "dashboard_save_session_metadata",
+      "dashboard_update_processing_progress",
+      "google_drive",
+      "google_drive_get_drive_manager",
+      "google_drive_rationale_1",
+      "google_drive_rationale_211"
+    ],
+    "4": [
+      "reporter",
+      "reporter_add_styled_table",
+      "reporter_coords_close",
+      "reporter_create_engineering_drawing",
+      "reporter_draw_styled_map",
+      "reporter_format_short_address",
+      "reporter_generate_word_report",
+      "reporter_merge_way_segments",
+      "reporter_query_airspace_class",
+      "reporter_query_city_boundary",
+      "reporter_query_nearest_airfield",
+      "reporter_rationale_105",
+      "reporter_rationale_12",
+      "reporter_rationale_134",
+      "reporter_rationale_198",
+      "reporter_rationale_241",
+      "reporter_rationale_246",
+      "reporter_rationale_297",
+      "reporter_rationale_606",
+      "reporter_rationale_629",
+      "reporter_rationale_64"
+    ],
+    "5": [
+      "gmail_lookup",
+      "gmail_lookup_extract_body_contacts",
+      "gmail_lookup_extract_external_contacts",
+      "gmail_lookup_get_calendar_service",
+      "gmail_lookup_get_plain_text_body",
+      "gmail_lookup_is_blocked_email",
+      "gmail_lookup_is_non_person_name",
+      "gmail_lookup_name_from_email",
+      "gmail_lookup_rationale_1",
+      "gmail_lookup_rationale_129",
+      "gmail_lookup_rationale_143",
+      "gmail_lookup_rationale_163",
+      "gmail_lookup_rationale_294",
+      "gmail_lookup_rationale_37",
+      "gmail_lookup_rationale_45",
+      "gmail_lookup_rationale_55",
+      "gmail_lookup_rationale_98",
+      "gmail_lookup_search_gmail_for_contacts"
+    ],
+    "6": [
+      "tests_test_pipeline",
+      "tests_test_pipeline_pipelinetests",
+      "tests_test_pipeline_pipelinetests_test_cluster_images_uses_transitive_connectivity",
+      "tests_test_pipeline_pipelinetests_test_create_engineering_drawing_writes_output",
+      "tests_test_pipeline_pipelinetests_test_extract_exif_gps_uses_exifread_for_heic_metadata",
+      "tests_test_pipeline_pipelinetests_test_generate_word_report_uses_generic_defaults_when_customer_info_missing",
+      "tests_test_pipeline_pipelinetests_test_process_and_organize_images_scopes_to_explicit_image_paths",
+      "tests_test_pipeline_rationale_178",
+      "tests_test_pipeline_rationale_181",
+      "tests_test_pipeline_rationale_197",
+      "tests_test_pipeline_rationale_211",
+      "tests_test_pipeline_rationale_229",
+      "tests_test_pipeline_testbubbleplacement",
+      "tests_test_pipeline_testbubbleplacement_test_bubble_near_right_edge_avoids_clipping",
+      "tests_test_pipeline_testbubbleplacement_test_bubble_near_top_left_avoids_clipping",
+      "tests_test_pipeline_testbubbleplacement_test_four_corner_markers",
+      "tests_test_pipeline_testbubbleplacement_test_multiple_markers_same_area_no_crash"
+    ],
+    "7": [
+      "analyzer",
+      "analyzer_analyze_image_heuristics",
+      "analyzer_analyze_image_via_api",
+      "analyzer_analyze_site",
+      "analyzer_rationale_126",
+      "analyzer_rationale_66",
+      "analyzer_rationale_7",
+      "main",
+      "main_main",
+      "main_rationale_12",
+      "main_run_pipeline"
+    ],
+    "8": [
+      "google_oauth_rationale_104",
+      "google_oauth_validate_domain",
+      "tests_test_google_oauth_rationale_10",
+      "tests_test_google_oauth_testvalidatedomain",
+      "tests_test_google_oauth_testvalidatedomain_test_empty_email_rejected",
+      "tests_test_google_oauth_testvalidatedomain_test_invalid_domain_rejected",
+      "tests_test_google_oauth_testvalidatedomain_test_none_email_rejected",
+      "tests_test_google_oauth_testvalidatedomain_test_subdomain_rejected",
+      "tests_test_google_oauth_testvalidatedomain_test_valid_brincdrones_email"
+    ],
+    "9": [
+      "brinc_logo_white_png",
+      "requirements_folium",
+      "requirements_streamlit",
+      "requirements_streamlit_folium",
+      "requirements_streamlit_image_coordinates",
+      "station_overlay_png"
+    ],
+    "10": [
+      "tests_test_processor_rationale_106",
+      "tests_test_processor_rationale_85",
+      "tests_test_processor_rationale_88",
+      "tests_test_processor_testprocessandorganizeimages",
+      "tests_test_processor_testprocessandorganizeimages_test_site_data_handles_missing_city",
+      "tests_test_processor_testprocessandorganizeimages_test_site_data_includes_city_and_agency_name"
+    ],
+    "11": [
+      "tests_test_processor_rationale_121",
+      "tests_test_processor_rationale_124",
+      "tests_test_processor_rationale_139",
+      "tests_test_processor_testreporterintegration",
+      "tests_test_processor_testreporterintegration_test_reporter_handles_missing_agency_name",
+      "tests_test_processor_testreporterintegration_test_site_data_format_compatible_with_reporter"
+    ],
+    "12": [
+      "tests_test_processor_rationale_69",
+      "tests_test_processor_rationale_72",
+      "tests_test_processor_rationale_78",
+      "tests_test_processor_testagencynamegeneration",
+      "tests_test_processor_testagencynamegeneration_test_agency_name_from_city",
+      "tests_test_processor_testagencynamegeneration_test_agency_name_is_none_when_city_is_none"
+    ],
+    "13": [
+      "agents_critical_rules"
+    ],
+    "14": [
+      "requirements_exifread"
+    ],
+    "15": [
+      "requirements_geopy"
+    ],
+    "16": [
+      "requirements_google_auth"
+    ],
+    "17": [
+      "requirements_pillow"
+    ],
+    "18": [
+      "requirements_pillow_heif"
+    ],
+    "19": [
+      "requirements_python_docx"
+    ],
+    "20": [
+      "requirements_python_dotenv"
+    ],
+    "21": [
+      "requirements_requests"
+    ],
+    "22": [
+      "tests_init"
+    ]
+  },
+  "cohesion": {
+    "0": 0.05877551020408163,
+    "1": 0.08387096774193549,
+    "2": 0.10317460317460317,
+    "3": 0.1,
+    "4": 0.12380952380952381,
+    "5": 0.16993464052287582,
+    "6": 0.11764705882352941,
+    "7": 0.23636363636363636,
+    "8": 0.3333333333333333,
+    "9": 0.3333333333333333,
+    "10": 0.3333333333333333,
+    "11": 0.3333333333333333,
+    "12": 0.3333333333333333,
+    "13": 1.0,
+    "14": 1.0,
+    "15": 1.0,
+    "16": 1.0,
+    "17": 1.0,
+    "18": 1.0,
+    "19": 1.0,
+    "20": 1.0,
+    "21": 1.0,
+    "22": 1.0
+  },
+  "gods": [
+    {
+      "id": "google_drive_googledrivemanager",
+      "label": "GoogleDriveManager",
+      "degree": 17
+    },
+    {
+      "id": "processor_extract_city_from_address",
+      "label": "extract_city_from_address()",
+      "degree": 16
+    },
+    {
+      "id": "gmail_lookup_search_gmail_for_contacts",
+      "label": "search_gmail_for_contacts()",
+      "degree": 11
+    },
+    {
+      "id": "tests_test_processor_testextractcityfromaddress",
+      "label": "TestExtractCityFromAddress",
+      "degree": 11
+    },
+    {
+      "id": "google_oauth_get_credentials",
+      "label": "get_credentials()",
+      "degree": 10
+    },
+    {
+      "id": "google_oauth_validate_domain",
+      "label": "_validate_domain()",
+      "degree": 9
+    },
+    {
+      "id": "tests_test_google_oauth_testvalidatedomain",
+      "label": "TestValidateDomain",
+      "degree": 8
+    },
+    {
+      "id": "processor_process_and_organize_images",
+      "label": "process_and_organize_images()",
+      "degree": 7
+    },
+    {
+      "id": "tests_test_google_oauth_testgetcredentials",
+      "label": "TestGetCredentials",
+      "degree": 7
+    },
+    {
+      "id": "gmail_lookup_get_gmail_service",
+      "label": "_get_gmail_service()",
+      "degree": 6
+    }
+  ],
+  "surprises": [
+    {
+      "source": "Station Overlay UI Component",
+      "target": "streamlit-image-coordinates",
+      "source_files": [
+        "images/station_overlay.png",
+        "requirements.txt"
+      ],
+      "confidence": "INFERRED",
+      "relation": "conceptually_related_to",
+      "why": "inferred connection - not explicitly stated in source; crosses file types (doc \u2194 image); connects across different repos/directories"
+    },
+    {
+      "source": "TestGetCredentials",
+      "target": "GoogleDriveManager",
+      "source_files": [
+        "tests/test_google_oauth.py",
+        "google_drive.py"
+      ],
+      "confidence": "INFERRED",
+      "relation": "uses",
+      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; bridges separate communities"
+    },
+    {
+      "source": "TestValidateDomain",
+      "target": "GoogleDriveManager",
+      "source_files": [
+        "tests/test_google_oauth.py",
+        "google_drive.py"
+      ],
+      "confidence": "INFERRED",
+      "relation": "uses",
+      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories; bridges separate communities"
+    },
+    {
+      "source": "_lookup_contacts_from_gmail()",
+      "target": "search_gmail_for_contacts()",
+      "source_files": [
+        "dashboard.py",
+        "gmail_lookup.py"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "connects across different repos/directories; bridges separate communities"
+    },
+    {
+      "source": "TestDriveManagerOAuth",
+      "target": "GoogleDriveManager",
+      "source_files": [
+        "tests/test_google_oauth.py",
+        "google_drive.py"
+      ],
+      "confidence": "INFERRED",
+      "relation": "uses",
+      "why": "inferred connection - not explicitly stated in source; connects across different repos/directories"
+    }
+  ],
+  "tokens": {
+    "input": 3268,
+    "output": 1889
+  }
+}
