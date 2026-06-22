@@ -758,3 +758,202 @@ def search_drive_for_gemini_notes(agency_name, city=None):
         result["status"] = "no_results"
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Jira: Ticket Search by Agency Name
+# ---------------------------------------------------------------------------
+
+def search_jira_for_tickets(agency_name, jira_url=None, jira_email=None, jira_token=None):
+    """Search Jira for tickets mentioning the agency name.
+
+    Uses Jira REST API v3 with Basic Auth (email + API token).
+    Searches across all projects using text search.
+
+    Args:
+        agency_name: e.g. "Lansing PD"
+        jira_url: Atlassian instance URL, e.g. "https://brincdrones.atlassian.net"
+        jira_email: User email for Basic Auth
+        jira_token: API token for Basic Auth
+
+    Returns:
+        dict with keys:
+            tickets: list of {key, summary, status, url, assignee}
+            status: "connected", "no_results", "no_credentials", or "error"
+            error: error string if request fails
+    """
+    import requests
+
+    result = {
+        "tickets": [],
+        "status": "no_credentials",
+        "error": "",
+    }
+
+    if not jira_url or not jira_email or not jira_token:
+        return result
+
+    # Clean URL
+    jira_url = jira_url.rstrip("/")
+
+    # JQL: search summary and description for agency name
+    jql = f'text ~ "{agency_name}" ORDER BY updated DESC'
+
+    try:
+        resp = requests.get(
+            f"{jira_url}/rest/api/3/search",
+            params={"jql": jql, "maxResults": 20, "fields": "summary,status,assignee"},
+            auth=(jira_email, jira_token),
+            timeout=15,
+        )
+        if resp.status_code == 401:
+            result["status"] = "error"
+            result["error"] = "Jira authentication failed (401). Check email/token."
+            return result
+        if resp.status_code == 403:
+            result["status"] = "error"
+            result["error"] = "Jira access denied (403). Check permissions."
+            return result
+        resp.raise_for_status()
+
+        data = resp.json()
+        for issue in data.get("issues", []):
+            key = issue.get("key", "")
+            fields = issue.get("fields", {})
+            assignee_obj = fields.get("assignee")
+            result["tickets"].append({
+                "key": key,
+                "summary": fields.get("summary", ""),
+                "status": fields.get("status", {}).get("name", ""),
+                "url": f"{jira_url}/browse/{key}",
+                "assignee": assignee_obj.get("displayName", "") if assignee_obj else "",
+            })
+
+        result["status"] = "connected" if result["tickets"] else "no_results"
+
+    except requests.exceptions.RequestException as e:
+        result["status"] = "error"
+        result["error"] = str(e)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# HubSpot: Company & Deal Search by Agency Name
+# ---------------------------------------------------------------------------
+
+def search_hubspot_for_records(agency_name, hubspot_token=None):
+    """Search HubSpot for companies and deals matching the agency name.
+
+    Uses HubSpot CRM v3 API with Private App access token.
+
+    Args:
+        agency_name: e.g. "Lansing PD"
+        hubspot_token: Private app access token
+
+    Returns:
+        dict with keys:
+            companies: list of {name, url, id}
+            deals: list of {name, stage, url, id, amount, close_date}
+            status: "connected", "no_results", "no_credentials", or "error"
+            error: error string if request fails
+    """
+    import requests
+
+    result = {
+        "companies": [],
+        "deals": [],
+        "status": "no_credentials",
+        "error": "",
+    }
+
+    if not hubspot_token:
+        return result
+
+    headers = {
+        "Authorization": f"Bearer {hubspot_token}",
+        "Content-Type": "application/json",
+    }
+
+    # Search companies by name
+    try:
+        resp = requests.post(
+            "https://api.hubapi.com/crm/v3/objects/companies/search",
+            headers=headers,
+            json={
+                "filterGroups": [{
+                    "filters": [{
+                        "propertyName": "name",
+                        "operator": "CONTAINS_TOKEN",
+                        "value": agency_name,
+                    }]
+                }],
+                "properties": ["name", "domain", "hs_object_id"],
+                "limit": 10,
+            },
+            timeout=15,
+        )
+        if resp.status_code == 401:
+            result["status"] = "error"
+            result["error"] = "HubSpot authentication failed (401). Check access token."
+            return result
+        resp.raise_for_status()
+
+        companies_data = resp.json()
+        company_ids = []
+        for co in companies_data.get("results", []):
+            props = co.get("properties", {})
+            co_id = co.get("id", "")
+            company_ids.append(co_id)
+            result["companies"].append({
+                "name": props.get("name", ""),
+                "url": f"https://app.hubspot.com/contacts/{co_id}/company/{co_id}" if co_id else "",
+                "id": co_id,
+            })
+
+    except requests.exceptions.RequestException as e:
+        result["status"] = "error"
+        result["error"] = f"Company search failed: {e}"
+        return result
+
+    # For each company, get associated deals
+    for co_id in company_ids[:5]:
+        try:
+            resp = requests.get(
+                f"https://api.hubapi.com/crm/v3/objects/companies/{co_id}/associations/deals",
+                headers=headers,
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                continue
+            assoc_data = resp.json()
+            deal_ids = [r.get("id") for r in assoc_data.get("results", []) if r.get("id")]
+
+            for deal_id in deal_ids[:10]:
+                deal_resp = requests.get(
+                    f"https://api.hubapi.com/crm/v3/objects/deals/{deal_id}",
+                    headers=headers,
+                    params={"properties": "dealname,dealstage,amount,closedate,hs_object_id"},
+                    timeout=15,
+                )
+                if deal_resp.status_code != 200:
+                    continue
+                deal = deal_resp.json()
+                dprops = deal.get("properties", {})
+                result["deals"].append({
+                    "name": dprops.get("dealname", ""),
+                    "stage": dprops.get("dealstage", ""),
+                    "url": f"https://app.hubspot.com/contacts/{co_id}/deal/{deal_id}" if deal_id else "",
+                    "id": deal_id,
+                    "amount": dprops.get("amount", ""),
+                    "close_date": dprops.get("closedate", ""),
+                })
+        except requests.exceptions.RequestException:
+            continue
+
+    if result["companies"] or result["deals"]:
+        result["status"] = "connected"
+    else:
+        result["status"] = "no_results"
+
+    return result

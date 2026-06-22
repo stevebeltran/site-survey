@@ -134,6 +134,12 @@ if "drive_folder_url" not in st.session_state:
     st.session_state.drive_folder_url = None
 if "candidate_sites" not in st.session_state:
     st.session_state.candidate_sites = []
+if "_last_doc_search_agency" not in st.session_state:
+    st.session_state._last_doc_search_agency = ""
+if "jira_results" not in st.session_state:
+    st.session_state.jira_results = {}
+if "hubspot_results" not in st.session_state:
+    st.session_state.hubspot_results = {}
 
 SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tiff", ".webp", ".heic", ".heif")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -241,6 +247,86 @@ def _lookup_contacts_from_gmail(agency_name, city=None):
     return search_gmail_for_contacts(agency_name, city)
 
 
+def _run_connected_docs_search(agency, city=""):
+    """Run Gmail + Drive + Jira + HubSpot search and store results in session state.
+
+    Returns True if any search produced results.
+    """
+    from gmail_lookup import search_drive_for_gemini_notes, search_jira_for_tickets, search_hubspot_for_records
+
+    found_any = False
+
+    # Gmail contacts
+    contacts = _lookup_contacts_from_gmail(agency, city)
+    contact_status = contacts.get("status", "no_results") if contacts else "no_results"
+    if contact_status == "connected":
+        found = contacts.get("all_contacts", [])
+        if found:
+            st.session_state["gmail_found_contacts"] = found
+        for key in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email"):
+            if contacts.get(key):
+                st.session_state.customer_info[key] = contacts[key]
+        st.session_state.integration_logs.append(f"[Gmail API] Found {len(found)} contacts for {agency}")
+        found_any = True
+    elif contact_status == "auth_error":
+        st.session_state.integration_logs.append(f"[Gmail API] Auth error: {contacts.get('error', '')}")
+    else:
+        st.session_state.integration_logs.append(f"[Gmail API] No contacts found for {agency}")
+
+    # Drive: Gemini notes & folders
+    drive_results = search_drive_for_gemini_notes(agency, city)
+    drive_status = drive_results.get("status", "no_results")
+    if drive_status == "connected":
+        st.session_state["drive_gemini_results"] = drive_results
+        notes_count = len(drive_results.get("gemini_notes", []))
+        folders_count = len(drive_results.get("drive_folders", []))
+        st.session_state.integration_logs.append(
+            f"[Drive API] Found {notes_count} Gemini notes, {folders_count} folders for {agency}"
+        )
+        specs = drive_results.get("extracted_specs", {})
+        for spec_key in ("power_circuit_requirements", "internet_ethernet_access"):
+            if specs.get(spec_key) and not st.session_state.customer_info.get(spec_key):
+                st.session_state.customer_info[spec_key] = specs[spec_key]
+        found_any = True
+    elif drive_status == "auth_error":
+        st.session_state.integration_logs.append(f"[Drive API] Auth error: {drive_results.get('error', '')}")
+
+    # Jira tickets
+    jira_results = search_jira_for_tickets(
+        agency,
+        jira_url=st.session_state.get("_jira_url", ""),
+        jira_email=st.session_state.get("_jira_email", ""),
+        jira_token=st.session_state.get("_jira_token", ""),
+    )
+    st.session_state["jira_results"] = jira_results
+    if jira_results["status"] == "connected":
+        st.session_state.integration_logs.append(
+            f"[Jira API] Found {len(jira_results['tickets'])} tickets for {agency}"
+        )
+        found_any = True
+    elif jira_results["status"] == "error":
+        st.session_state.integration_logs.append(f"[Jira API] Error: {jira_results['error']}")
+
+    # HubSpot records
+    hubspot_results = search_hubspot_for_records(
+        agency,
+        hubspot_token=st.session_state.get("_hubspot_token", ""),
+    )
+    st.session_state["hubspot_results"] = hubspot_results
+    if hubspot_results["status"] == "connected":
+        co_count = len(hubspot_results["companies"])
+        deal_count = len(hubspot_results["deals"])
+        st.session_state.integration_logs.append(
+            f"[HubSpot API] Found {co_count} companies, {deal_count} deals for {agency}"
+        )
+        found_any = True
+    elif hubspot_results["status"] == "error":
+        st.session_state.integration_logs.append(f"[HubSpot API] Error: {hubspot_results['error']}")
+
+    st.session_state._last_doc_search_agency = agency
+    return found_any
+
+
 # Header – compact banner with BRINC logo
 import base64 as _b64
 
@@ -294,11 +380,22 @@ with st.sidebar:
     
     st.subheader("2. Integrations & Credentials")
     with st.expander("API Configurations"):
-        hubspot_api = st.text_input("HubSpot Access Token", type="password")
-        jira_url = st.text_input("Jira Server URL", value="https://jira.dfr-deployments.atlassian.net")
+        hubspot_api = st.text_input("HubSpot Access Token", type="password",
+                                     value=st.secrets.get("HUBSPOT_ACCESS_TOKEN", ""))
+        jira_url = st.text_input("Jira Server URL",
+                                  value=st.secrets.get("JIRA_URL", "https://brincdrones.atlassian.net"))
+        jira_email = st.text_input("Jira Email",
+                                    value=st.secrets.get("JIRA_EMAIL", ""))
+        jira_token = st.text_input("Jira API Token", type="password",
+                                    value=st.secrets.get("JIRA_API_TOKEN", ""))
         slack_webhook = st.text_input("Slack Webhook URL", type="password")
         gdrive_folder = st.text_input("Google Drive Folder ID")
-        
+        # Store in session state so search functions can access them
+        st.session_state["_hubspot_token"] = hubspot_api
+        st.session_state["_jira_url"] = jira_url
+        st.session_state["_jira_email"] = jira_email
+        st.session_state["_jira_token"] = jira_token
+
     st.info("💡 Mocks are enabled automatically for unset credentials.")
 
     st.divider()
@@ -358,17 +455,8 @@ with st.expander("📤 Upload Survey Photos", expanded=not _has_sites):
                         agency = detection["agency_name"]
                         st.session_state.customer_info["agency_name"] = agency
                         st.session_state.customer_info["agency_address"] = reporter._format_short_address(detection.get("address", ""))
-                        contacts = _lookup_contacts_from_gmail(agency, detection.get("city", ""))
-                        if contacts:
-                            if contacts.get("status") == "connected":
-                                for key in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email"):
-                                    if contacts.get(key):
-                                        st.session_state.customer_info[key] = contacts[key]
-                                found = contacts.get("all_contacts", [])
-                                if found:
-                                    st.session_state["gmail_found_contacts"] = found
-                            elif contacts.get("status") == "auth_error":
-                                st.session_state["gmail_auth_error"] = contacts.get("error", "")
+                        # Run full connected docs search (Gmail, Drive, Jira, HubSpot)
+                        _run_connected_docs_search(agency, detection.get("city", ""))
                         break
                 else:
                     st.session_state.gps_detected_agency = {}
@@ -393,104 +481,113 @@ with st.expander("📤 Upload Survey Photos", expanded=not _has_sites):
 if uploaded_files and not st.session_state.get("_auto_processed"):
     st.session_state._auto_processed = True
 
-    progress_bar = st.progress(0)
-    progress_text = st.empty()
+    with st.status("Processing survey photos...", expanded=True) as status:
+        def _update_processing_progress(percent, message):
+            status.update(label=f"Processing — {int(percent)}%")
+            status.write(f"⏳ {message}")
 
-    def _update_processing_progress(percent, message):
-        progress_bar.progress(max(0, min(100, int(percent))))
-        progress_text.caption(f"{int(percent)}% - {message}")
-
-    try:
-        st.session_state.processed_sites = []
-        st.session_state.active_bg_image = None
-        st.session_state.last_click = {}
-
-        # Save uploaded files to disk so the processor can read them
-        temp_dir = tempfile.mkdtemp(prefix="dfr_ingest_")
-        image_paths_for_processing = []
-        for uploaded_file in uploaded_files:
-            temp_path = os.path.join(temp_dir, uploaded_file.name)
-            with open(temp_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            image_paths_for_processing.append(temp_path)
-        st.session_state.image_paths = image_paths_for_processing
-
-        # Get Drive manager for processing pipeline
-        proc_drive = None
         try:
-            proc_drive = get_drive_manager()
-        except Exception:
-            pass
+            st.session_state.processed_sites = []
+            st.session_state.active_bg_image = None
+            st.session_state.last_click = {}
 
-        site_data = processor.process_and_organize_images(
-            source_dir=temp_dir,
-            output_dir=output_dir,
-            radius_meters=proximity_radius,
-            progress_callback=_update_processing_progress,
-            image_paths=image_paths_for_processing,
-            drive_manager=proc_drive,
-            drive_output_folder_id=st.session_state.get('processed_folder_id')
-        )
+            # Save uploaded files to disk so the processor can read them
+            status.write(f"📂 Saving {len(uploaded_files)} uploaded file(s) to disk...")
+            temp_dir = tempfile.mkdtemp(prefix="dfr_ingest_")
+            image_paths_for_processing = []
+            for uploaded_file in uploaded_files:
+                temp_path = os.path.join(temp_dir, uploaded_file.name)
+                with open(temp_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                image_paths_for_processing.append(temp_path)
+            st.session_state.image_paths = image_paths_for_processing
 
-        if not site_data:
-            st.warning("No images with GPS metadata were found in the uploaded files.")
+            # Get Drive manager for processing pipeline
+            proc_drive = None
+            try:
+                proc_drive = get_drive_manager()
+            except Exception:
+                pass
 
-        for site in site_data:
-            site["analysis"] = analyzer.analyze_site(site)
-            airfield = reporter.query_nearest_airfield(site['latitude'], site['longitude'])
-            site["airfield_info"] = f"{airfield[0]} ({airfield[1]:.2f} miles)" if airfield else "Lookup failed"
-            airspace = reporter.query_airspace_class(site["latitude"], site["longitude"])
-            site["airspace"] = airspace if airspace else "Lookup failed"
-            for img in site.get("images", []):
-                if "selected_for_report" not in img:
-                    img["selected_for_report"] = True
+            status.write("🔍 Extracting EXIF metadata and clustering by GPS...")
+            site_data = processor.process_and_organize_images(
+                source_dir=temp_dir,
+                output_dir=output_dir,
+                radius_meters=proximity_radius,
+                progress_callback=_update_processing_progress,
+                image_paths=image_paths_for_processing,
+                drive_manager=proc_drive,
+                drive_output_folder_id=st.session_state.get('processed_folder_id')
+            )
 
-        st.session_state.processed_sites = site_data
+            if not site_data:
+                st.warning("No images with GPS metadata were found in the uploaded files.")
 
-        # Auto-populate customer info from metadata
-        if site_data:
-            first_site = site_data[0]
-            first_address = first_site.get("address", "")
-            agency_name = first_site.get("agency_name") or f"{_extract_town_state_from_address(first_address)[0]} Police Department"
+            status.write(f"🏗️ Analyzing infrastructure for {len(site_data)} site(s)...")
+            for i, site in enumerate(site_data):
+                status.update(label=f"Analyzing site {i+1}/{len(site_data)}")
+                status.write(f"🔎 Site {i+1}: Running infrastructure detection...")
+                site["analysis"] = analyzer.analyze_site(site)
+                status.write(f"✈️ Site {i+1}: Querying airspace & airfield data...")
+                airfield = reporter.query_nearest_airfield(site['latitude'], site['longitude'])
+                site["airfield_info"] = f"{airfield[0]} ({airfield[1]:.2f} miles)" if airfield else "Lookup failed"
+                airspace = reporter.query_airspace_class(site["latitude"], site["longitude"])
+                site["airspace"] = airspace if airspace else "Lookup failed"
+                for img in site.get("images", []):
+                    if "selected_for_report" not in img:
+                        img["selected_for_report"] = True
 
-            existing = st.session_state.customer_info
-            st.session_state.customer_info = {
-                "agency_name": agency_name,
-                "agency_address": reporter._format_short_address(first_address),
-                "poc_name": existing.get("poc_name", ""),
-                "poc_email": existing.get("poc_email", ""),
-                "poc_phone": existing.get("poc_phone", ""),
-                "it_director": existing.get("it_director", ""),
-                "it_email": existing.get("it_email", ""),
-                "facilities_engineer": existing.get("facilities_engineer", ""),
-                "facilities_email": existing.get("facilities_email", ""),
-            }
-            _save_session_metadata(site_data)
+            st.session_state.processed_sites = site_data
 
-        # Convert to CandidateSite objects
-        st.session_state.candidate_sites = []
-        if site_data:
-            if st.session_state.get("clustering_method") == "DBSCAN (auto)":
-                all_images = []
-                for site in site_data:
-                    all_images.extend(site.get("images", []))
-                clusters = cluster_images_dbscan(all_images)
-                st.session_state.candidate_sites = cluster_to_candidate_sites(
-                    clusters, agency_name=st.session_state.customer_info.get("agency_name", "")
-                )
-            else:
-                st.session_state.candidate_sites = [
-                    CandidateSite.from_site_dict(s) for s in site_data
-                ]
-            for cs in st.session_state.candidate_sites:
-                enrich_gis(cs)
+            # Auto-populate customer info from metadata
+            if site_data:
+                first_site = site_data[0]
+                first_address = first_site.get("address", "")
+                agency_name = first_site.get("agency_name") or f"{_extract_town_state_from_address(first_address)[0]} Police Department"
 
-        st.rerun()
-    except Exception as e:
-        st.error(f"Processing failed: {e}")
-    finally:
-        progress_bar.empty()
-        progress_text.empty()
+                existing = st.session_state.customer_info
+                st.session_state.customer_info = {
+                    "agency_name": agency_name,
+                    "agency_address": reporter._format_short_address(first_address),
+                    "poc_name": existing.get("poc_name", ""),
+                    "poc_email": existing.get("poc_email", ""),
+                    "poc_phone": existing.get("poc_phone", ""),
+                    "it_director": existing.get("it_director", ""),
+                    "it_email": existing.get("it_email", ""),
+                    "facilities_engineer": existing.get("facilities_engineer", ""),
+                    "facilities_email": existing.get("facilities_email", ""),
+                }
+                _save_session_metadata(site_data)
+
+            # Convert to CandidateSite objects
+            st.session_state.candidate_sites = []
+            if site_data:
+                status.update(label="Building candidate sites...")
+                if st.session_state.get("clustering_method") == "DBSCAN (auto)":
+                    all_images = []
+                    for site in site_data:
+                        all_images.extend(site.get("images", []))
+                    clusters = cluster_images_dbscan(all_images)
+                    st.session_state.candidate_sites = cluster_to_candidate_sites(
+                        clusters, agency_name=st.session_state.customer_info.get("agency_name", "")
+                    )
+                else:
+                    st.session_state.candidate_sites = [
+                        CandidateSite.from_site_dict(s) for s in site_data
+                    ]
+
+                total_cs = len(st.session_state.candidate_sites)
+                for cs_idx, cs in enumerate(st.session_state.candidate_sites, start=1):
+                    status.update(label=f"Enriching site {cs_idx}/{total_cs} with GIS data...")
+                    def _gis_progress(step, _idx=cs_idx, _total=total_cs):
+                        status.write(f"🌐 Site {_idx}/{_total}: {step}")
+                    enrich_gis(cs, progress_callback=_gis_progress)
+
+            status.update(label="Processing complete!", state="complete", expanded=False)
+            st.rerun()
+        except Exception as e:
+            status.update(label="Processing failed", state="error")
+            st.error(f"Processing failed: {e}")
 
 def _render_site_checklist(site, site_idx):
     """Render a unified checklist card for a CandidateSite."""
@@ -672,70 +769,38 @@ with tab1:
         st.markdown("")  # spacer to align button with inputs
         st.markdown("")
         if google_oauth.is_authenticated():
-            if st.button("🔌 Pull from Gmail & Drive", use_container_width=True):
-                agency = st.session_state.customer_info.get("agency_name", "")
+            agency = st.session_state.customer_info.get("agency_name", "")
+            # Auto-trigger: search when agency name is new/changed
+            if agency and agency != st.session_state.get("_last_doc_search_agency", ""):
+                with st.status("Auto-pulling contacts & documents...", expanded=True) as pull_status:
+                    pull_status.write(f"🔍 Searching for \"{agency}\"...")
+                    _run_connected_docs_search(agency, st.session_state.get("gps_detected_agency", {}).get("city", ""))
+                    pull_status.update(label="Search complete!", state="complete", expanded=False)
+                st.rerun()
+
+            # Manual refresh button
+            if st.button("🔄 Refresh Connected Docs", use_container_width=True):
                 if not agency:
                     st.warning("Enter or detect an Agency Name first.")
                 else:
-                    city = st.session_state.get("gps_detected_agency", {}).get("city", "")
-
-                    # --- Gmail: contacts ---
-                    with st.spinner("Searching Gmail for contact information..."):
-                        contacts = _lookup_contacts_from_gmail(agency, city)
-                    status = contacts.get("status", "no_results") if contacts else "no_results"
-                    if status == "auth_error":
-                        err = contacts.get("error", "")
-                        st.error(f"Gmail authentication error: {err}")
-                        st.session_state.integration_logs.append(f"[Gmail API] Auth error: {err}")
-                    elif status == "connected":
-                        found = contacts.get("all_contacts", [])
-                        if found:
-                            st.session_state["gmail_found_contacts"] = found
-                        for key in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email"):
-                            if contacts.get(key):
-                                st.session_state.customer_info[key] = contacts[key]
-                        st.session_state.integration_logs.append(f"[Gmail API] Found {len(found)} contacts for {agency}")
-                    else:
-                        st.info(f"No matching Gmail threads found for \"{agency}\".")
-                        st.session_state.integration_logs.append(f"[Gmail API] Connected — no contacts found for {agency}")
-
-                    # --- Drive: Gemini notes & folders ---
-                    with st.spinner("Searching Google Drive for Gemini notes and folder information..."):
-                        from gmail_lookup import search_drive_for_gemini_notes
-                        drive_results = search_drive_for_gemini_notes(agency, city)
-                    drive_status = drive_results.get("status", "no_results")
-                    if drive_status == "auth_error":
-                        st.warning(f"Drive search error: {drive_results.get('error', 'Unknown')}")
-                    elif drive_status == "connected":
-                        st.session_state["drive_gemini_results"] = drive_results
-                        notes_count = len(drive_results.get("gemini_notes", []))
-                        folders_count = len(drive_results.get("drive_folders", []))
-                        st.session_state.integration_logs.append(
-                            f"[Drive API] Found {notes_count} Gemini notes, {folders_count} folders for {agency}"
-                        )
-                        # Auto-populate deployment specs from extracted data
-                        specs = drive_results.get("extracted_specs", {})
-                        for spec_key in ("power_circuit_requirements", "internet_ethernet_access"):
-                            if specs.get(spec_key) and not st.session_state.customer_info.get(spec_key):
-                                st.session_state.customer_info[spec_key] = specs[spec_key]
-                    else:
-                        st.session_state.integration_logs.append(f"[Drive API] No Gemini notes found for {agency}")
-
+                    st.session_state._last_doc_search_agency = ""  # force re-search
                     st.rerun()
         else:
             google_oauth.render_connect_button("Connect Google for Gmail & Drive Lookup")
 
     with col_c3:
-        # --- Connected Gemini Notes & Drive Links ---
+        # --- Connected Documents Panel ---
         st.markdown("**Connected Documents**")
+        has_any = False
+
+        # --- Gemini Notes & Drive Links ---
         drive_data = st.session_state.get("drive_gemini_results")
         if drive_data and drive_data.get("status") == "connected":
-            # Gemini meeting notes
+            has_any = True
             for note in drive_data.get("gemini_notes", []):
                 title = note.get("title", "Untitled")
                 url = note.get("url", "")
                 date = note.get("date", "")
-                # Shorten long titles for display
                 short_title = title[:60] + "..." if len(title) > 60 else title
                 if url:
                     st.markdown(f"📝 [{short_title}]({url})")
@@ -744,7 +809,6 @@ with tab1:
                 if date:
                     st.caption(f"  Modified: {date}")
 
-            # Drive folders
             for folder in drive_data.get("drive_folders", []):
                 name = folder.get("name", "")
                 url = folder.get("url", "")
@@ -767,8 +831,56 @@ with tab1:
                 ]:
                     if specs.get(key):
                         st.caption(f"  {label}: {specs[key]}")
-        else:
-            st.caption("No connected documents yet. Click 'Pull from Gmail & Drive' to search.")
+
+        # --- Jira Tickets ---
+        jira_data = st.session_state.get("jira_results")
+        if jira_data and jira_data.get("status") == "connected":
+            has_any = True
+            st.markdown("---")
+            st.markdown("**🎫 Jira Tickets**")
+            for ticket in jira_data.get("tickets", []):
+                key = ticket.get("key", "")
+                summary = ticket.get("summary", "")
+                status = ticket.get("status", "")
+                url = ticket.get("url", "")
+                short_summary = summary[:50] + "..." if len(summary) > 50 else summary
+                status_badge = f" `{status}`" if status else ""
+                if url:
+                    st.markdown(f"[{key}]({url}) — {short_summary}{status_badge}")
+                else:
+                    st.caption(f"{key} — {short_summary}{status_badge}")
+        elif jira_data and jira_data.get("status") == "error":
+            st.caption(f"⚠️ Jira: {jira_data.get('error', 'Unknown error')}")
+
+        # --- HubSpot Records ---
+        hubspot_data = st.session_state.get("hubspot_results")
+        if hubspot_data and hubspot_data.get("status") == "connected":
+            has_any = True
+            st.markdown("---")
+            st.markdown("**🏢 HubSpot**")
+            for co in hubspot_data.get("companies", []):
+                name = co.get("name", "")
+                url = co.get("url", "")
+                if url:
+                    st.markdown(f"Company: [{name}]({url})")
+                else:
+                    st.caption(f"Company: {name}")
+            for deal in hubspot_data.get("deals", []):
+                name = deal.get("name", "")
+                stage = deal.get("stage", "")
+                url = deal.get("url", "")
+                amount = deal.get("amount", "")
+                stage_badge = f" `{stage}`" if stage else ""
+                amount_str = f" (${amount})" if amount else ""
+                if url:
+                    st.markdown(f"Deal: [{name}]({url}){stage_badge}{amount_str}")
+                else:
+                    st.caption(f"Deal: {name}{stage_badge}{amount_str}")
+        elif hubspot_data and hubspot_data.get("status") == "error":
+            st.caption(f"⚠️ HubSpot: {hubspot_data.get('error', 'Unknown error')}")
+
+        if not has_any:
+            st.caption("No connected documents yet. Enter an Agency Name to auto-search.")
 
     # --- POC / Contacts Table ---
     st.markdown("**Points of Contact**")
@@ -1347,29 +1459,32 @@ with tab1:
                 key="use_new_report",
             )
             if st.button("📄 Build Report & Upload to Drive", use_container_width=True):
-                try:
-                    # Update metadata save
-                    _save_session_metadata(st.session_state.processed_sites)
-
-                    # Create subfolder with PD name and creation date
-                    pd_name = st.session_state.customer_info.get("agency_name", "Report").replace(" ", "_")
-                    creation_date = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                    report_subfolder = os.path.join(output_dir, f"{pd_name}_{creation_date}")
-                    os.makedirs(report_subfolder, exist_ok=True)
-
-                    # Save report in subfolder
-                    report_path = os.path.join(report_subfolder, report_name)
-
-                    # Get Drive manager for report upload
-                    report_drive = None
+                with st.status("Building report & uploading...", expanded=True) as report_status:
                     try:
-                        report_drive = get_drive_manager()
-                    except Exception:
-                        pass
+                        # Update metadata save
+                        report_status.write("💾 Saving session metadata...")
+                        _save_session_metadata(st.session_state.processed_sites)
 
-                    # Upload raw images to Drive if authenticated and not yet uploaded
-                    if report_drive and uploaded_files and not st.session_state.get("client_folder_id"):
-                        with st.spinner("Creating folder structure and uploading images to Drive..."):
+                        # Create subfolder with PD name and creation date
+                        pd_name = st.session_state.customer_info.get("agency_name", "Report").replace(" ", "_")
+                        creation_date = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                        report_subfolder = os.path.join(output_dir, f"{pd_name}_{creation_date}")
+                        os.makedirs(report_subfolder, exist_ok=True)
+
+                        # Save report in subfolder
+                        report_path = os.path.join(report_subfolder, report_name)
+
+                        # Get Drive manager for report upload
+                        report_drive = None
+                        try:
+                            report_drive = get_drive_manager()
+                        except Exception:
+                            pass
+
+                        # Upload raw images to Drive if authenticated and not yet uploaded
+                        if report_drive and uploaded_files and not st.session_state.get("client_folder_id"):
+                            report_status.update(label="Uploading images to Google Drive...")
+                            report_status.write("📂 Creating Drive folder structure...")
                             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                             agency = st.session_state.customer_info.get("agency_name", client_name)
                             client_folder_name = f"{agency.replace(' ', '_')}_{timestamp}"
@@ -1380,14 +1495,13 @@ with tab1:
                             rep_fid = report_drive.get_or_create_folder(client_fid, "03_Reports")
                             meta_fid = report_drive.get_or_create_folder(client_fid, "04_Metadata")
 
-                            progress_bar = st.progress(0)
+                            total_upload = len(uploaded_files)
                             for idx, uploaded_file in enumerate(uploaded_files):
+                                report_status.write(f"☁️ Uploading image {idx+1}/{total_upload}: {uploaded_file.name}")
                                 temp_path = os.path.join(tempfile.gettempdir(), uploaded_file.name)
                                 with open(temp_path, "wb") as f:
                                     f.write(uploaded_file.getbuffer())
                                 report_drive.upload_file(temp_path, raw_fid)
-                                progress_bar.progress((idx + 1) / len(uploaded_files))
-                            progress_bar.empty()
 
                             st.session_state.client_folder_id = client_fid
                             st.session_state.raw_images_folder_id = raw_fid
@@ -1396,49 +1510,60 @@ with tab1:
                             st.session_state.metadata_folder_id = meta_fid
                             st.session_state.client_name = agency
                             st.session_state.drive_folder_url = f"https://drive.google.com/drive/folders/{client_fid}"
-                            st.success(f"Uploaded {len(uploaded_files)} images to Drive!")
+                            report_status.write(f"✅ Uploaded {total_upload} images to Drive")
 
-                    if use_new_report and st.session_state.candidate_sites:
-                        from reporter import generate_candidate_site_report
-                        generate_candidate_site_report(
-                            st.session_state.candidate_sites,
-                            report_path,
-                            customer_info=st.session_state.customer_info,
-                            drive_manager=report_drive,
-                            drive_reports_folder_id=st.session_state.get('reports_folder_id')
-                        )
-                    else:
-                        reporter.generate_word_report(
-                            st.session_state.processed_sites,
-                            report_path,
-                            customer_info=st.session_state.customer_info,
-                            drive_manager=report_drive,
-                            drive_reports_folder_id=st.session_state.get('reports_folder_id')
-                        )
-                    st.success(f"Generated report: `{report_path}`")
-                    st.session_state.generated_report = report_path
+                        report_status.update(label="Generating report document...")
+                        def _report_progress(step):
+                            report_status.write(f"📝 {step}")
 
-                    # Upload exports to Drive if authenticated
-                    if st.session_state.candidate_sites and report_drive and st.session_state.get("metadata_folder_id"):
-                        try:
-                            _json_path = os.path.join(report_subfolder, "survey_export.json")
-                            export_sites_json(st.session_state.candidate_sites, _json_path)
-                            report_drive.upload_file(_json_path, st.session_state.metadata_folder_id)
-                        except Exception:
-                            pass
-                        try:
-                            _csv_path = os.path.join(report_subfolder, "survey_export.csv")
-                            export_sites_csv(st.session_state.candidate_sites, _csv_path)
-                            report_drive.upload_file(_csv_path, st.session_state.metadata_folder_id)
-                        except Exception:
-                            pass
+                        if use_new_report and st.session_state.candidate_sites:
+                            from reporter import generate_candidate_site_report
+                            generate_candidate_site_report(
+                                st.session_state.candidate_sites,
+                                report_path,
+                                customer_info=st.session_state.customer_info,
+                                drive_manager=report_drive,
+                                drive_reports_folder_id=st.session_state.get('reports_folder_id'),
+                                progress_callback=_report_progress,
+                            )
+                        else:
+                            reporter.generate_word_report(
+                                st.session_state.processed_sites,
+                                report_path,
+                                customer_info=st.session_state.customer_info,
+                                drive_manager=report_drive,
+                                drive_reports_folder_id=st.session_state.get('reports_folder_id'),
+                                progress_callback=_report_progress,
+                            )
+                        st.session_state.generated_report = report_path
 
-                    # Update Drive folder URL if we have the folder ID
-                    if st.session_state.get("client_folder_id"):
-                        st.session_state.drive_folder_url = f"https://drive.google.com/drive/folders/{st.session_state.client_folder_id}"
+                        # Upload exports to Drive if authenticated
+                        if st.session_state.candidate_sites and report_drive and st.session_state.get("metadata_folder_id"):
+                            report_status.write("📤 Uploading JSON & CSV exports to Drive...")
+                            try:
+                                _json_path = os.path.join(report_subfolder, "survey_export.json")
+                                export_sites_json(st.session_state.candidate_sites, _json_path)
+                                report_drive.upload_file(_json_path, st.session_state.metadata_folder_id)
+                            except Exception:
+                                pass
+                            try:
+                                _csv_path = os.path.join(report_subfolder, "survey_export.csv")
+                                export_sites_csv(st.session_state.candidate_sites, _csv_path)
+                                report_drive.upload_file(_csv_path, st.session_state.metadata_folder_id)
+                            except Exception:
+                                pass
 
-                except Exception as e:
-                    st.error(f"Report generation error: {e}")
+                        # Update Drive folder URL if we have the folder ID
+                        if st.session_state.get("client_folder_id"):
+                            st.session_state.drive_folder_url = f"https://drive.google.com/drive/folders/{st.session_state.client_folder_id}"
+
+                        report_status.update(label="Report generated successfully!", state="complete", expanded=False)
+                    except Exception as e:
+                        report_status.update(label="Report generation failed", state="error")
+                        st.error(f"Report generation error: {e}")
+
+                if st.session_state.get("generated_report"):
+                    st.success(f"Generated report: `{st.session_state.generated_report}`")
 
             # Persistent export buttons — survive reruns
             if st.session_state.get("generated_report") and st.session_state.candidate_sites:
@@ -1524,8 +1649,30 @@ with tab2:
     with col_x:
         st.markdown("#### CRM & Kickoff Scheduler")
         if st.button("🔍 Fetch Customer Purchase Info (HubSpot)", use_container_width=True, key="hs_sync_tab2"):
-            st.session_state.integration_logs.append("[HubSpot API] GET /crm/v3/objects/deals - Retrieved Contact: Mike Hynek, Deal: DFR Node Deployment")
-            st.info("Deal information retrieved successfully.")
+            agency = st.session_state.customer_info.get("agency_name", "")
+            if not agency:
+                st.warning("Enter an Agency Name on the Survey Pipeline tab first.")
+            else:
+                from gmail_lookup import search_hubspot_for_records
+                with st.spinner("Searching HubSpot..."):
+                    hs_results = search_hubspot_for_records(
+                        agency,
+                        hubspot_token=st.session_state.get("_hubspot_token", ""),
+                    )
+                    st.session_state["hubspot_results"] = hs_results
+                if hs_results["status"] == "connected":
+                    co_count = len(hs_results["companies"])
+                    deal_count = len(hs_results["deals"])
+                    st.session_state.integration_logs.append(
+                        f"[HubSpot API] Found {co_count} companies, {deal_count} deals for {agency}"
+                    )
+                    st.success(f"Found {co_count} companies and {deal_count} deals.")
+                elif hs_results["status"] == "no_credentials":
+                    st.warning("HubSpot access token not configured. Add it in Settings > API Configurations.")
+                elif hs_results["status"] == "error":
+                    st.error(f"HubSpot error: {hs_results['error']}")
+                else:
+                    st.info("No HubSpot records found for this agency.")
             
         if st.button("📅 Schedule Kickoff Meeting (Google Calendar)", use_container_width=True, key="cal_sync_tab2"):
             st.session_state.integration_logs.append("[Google Calendar API] POST /events - Scheduled Kickoff for Lansing PD")
@@ -1540,9 +1687,32 @@ with tab2:
 
     with col_y:
         st.markdown("#### Operations & Communication")
-        if st.button("🎫 Create Deployment Tracker (Jira)", use_container_width=True, key="jira_sync_tab2"):
-            st.session_state.integration_logs.append("[Jira REST API] POST /issue - Created onboarding ticket LANS-101")
-            st.success("Jira Onboarding Issue Created: LANS-101")
+        if st.button("🎫 Search Jira Tickets", use_container_width=True, key="jira_sync_tab2"):
+            agency = st.session_state.customer_info.get("agency_name", "")
+            if not agency:
+                st.warning("Enter an Agency Name on the Survey Pipeline tab first.")
+            else:
+                from gmail_lookup import search_jira_for_tickets
+                with st.spinner("Searching Jira..."):
+                    jira_results = search_jira_for_tickets(
+                        agency,
+                        jira_url=st.session_state.get("_jira_url", ""),
+                        jira_email=st.session_state.get("_jira_email", ""),
+                        jira_token=st.session_state.get("_jira_token", ""),
+                    )
+                    st.session_state["jira_results"] = jira_results
+                if jira_results["status"] == "connected":
+                    count = len(jira_results["tickets"])
+                    st.session_state.integration_logs.append(
+                        f"[Jira API] Found {count} tickets for {agency}"
+                    )
+                    st.success(f"Found {count} Jira tickets.")
+                elif jira_results["status"] == "no_credentials":
+                    st.warning("Jira credentials not configured. Add email + API token in Settings > API Configurations.")
+                elif jira_results["status"] == "error":
+                    st.error(f"Jira error: {jira_results['error']}")
+                else:
+                    st.info("No Jira tickets found for this agency.")
             
         if st.button("💬 Send Project Status to Slack", use_container_width=True, key="slack_sync_tab2"):
             st.session_state.integration_logs.append("[Slack Webhook] POST /hooks - Posted Lansing PD survey status")
