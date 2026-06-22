@@ -428,179 +428,182 @@ def _on_files_changed():
 
 # Collapse the uploader once sites have been processed
 _has_sites = bool(st.session_state.get("processed_sites"))
-with st.expander("📤 Upload Survey Photos", expanded=not _has_sites):
-    clustering_method = st.selectbox(
-        "Clustering Method",
-        ["Radius (90m)", "DBSCAN (auto)"],
-        index=0,
-        key="clustering_method",
-        help="Radius: groups photos within 90m. DBSCAN: auto-detects clusters by density.",
-    )
-    uploaded_files = st.file_uploader(
-        "Upload raw survey photos (.jpg, .jpeg, .png)",
-        accept_multiple_files=True,
-        type=["jpg", "jpeg", "png", "heic"],
-        on_change=_on_files_changed,
-        label_visibility="collapsed",
-    )
-
-    if uploaded_files:
-        # Auto-detect agency from GPS
-        if "gps_detected_agency" not in st.session_state:
-            with st.spinner("Detecting location from photo GPS data..."):
-                for uf in uploaded_files:
-                    detection = _detect_agency_from_gps(uf.getvalue(), uf.name)
-                    if detection and detection.get("agency_name"):
-                        st.session_state.gps_detected_agency = detection
-                        agency = detection["agency_name"]
-                        st.session_state.customer_info["agency_name"] = agency
-                        st.session_state.customer_info["agency_address"] = reporter._format_short_address(detection.get("address", ""))
-                        break
-                else:
-                    st.session_state.gps_detected_agency = {}
-
-        suggested_name = st.session_state.get("gps_detected_agency", {}).get("agency_name", "")
-        client_name = st.text_input(
-            "Client/Agency Name",
-            value=suggested_name or "Untitled_Site_Survey",
+_upload_col, _status_col = st.columns(2)
+with _upload_col:
+    with st.expander("📤 Upload Survey Photos", expanded=not _has_sites):
+        clustering_method = st.selectbox(
+            "Clustering Method",
+            ["Radius (90m)", "DBSCAN (auto)"],
+            index=0,
+            key="clustering_method",
+            help="Radius: groups photos within 90m. DBSCAN: auto-detects clusters by density.",
         )
-        if suggested_name:
-            st.caption(f"Auto-detected from GPS: {st.session_state['gps_detected_agency'].get('address', '')}")
-        if st.session_state.pop("gmail_auth_error", None):
-            if google_oauth.is_authenticated():
-                st.warning("Could not search Gmail for contacts. Use the 'Pull Contacts from Gmail' button below to retry.")
-            else:
-                st.warning("Connect your Google account to search Gmail for contacts.")
+        uploaded_files = st.file_uploader(
+            "Upload raw survey photos (.jpg, .jpeg, .png)",
+            accept_multiple_files=True,
+            type=["jpg", "jpeg", "png", "heic"],
+            on_change=_on_files_changed,
+            label_visibility="collapsed",
+        )
 
-    else:
-        client_name = "Untitled_Site_Survey"
+        if uploaded_files:
+            # Auto-detect agency from GPS
+            if "gps_detected_agency" not in st.session_state:
+                with st.spinner("Detecting location from photo GPS data..."):
+                    for uf in uploaded_files:
+                        detection = _detect_agency_from_gps(uf.getvalue(), uf.name)
+                        if detection and detection.get("agency_name"):
+                            st.session_state.gps_detected_agency = detection
+                            agency = detection["agency_name"]
+                            st.session_state.customer_info["agency_name"] = agency
+                            st.session_state.customer_info["agency_address"] = reporter._format_short_address(detection.get("address", ""))
+                            break
+                    else:
+                        st.session_state.gps_detected_agency = {}
+
+            suggested_name = st.session_state.get("gps_detected_agency", {}).get("agency_name", "")
+            client_name = st.text_input(
+                "Client/Agency Name",
+                value=suggested_name or "Untitled_Site_Survey",
+            )
+            if suggested_name:
+                st.caption(f"Auto-detected from GPS: {st.session_state['gps_detected_agency'].get('address', '')}")
+            if st.session_state.pop("gmail_auth_error", None):
+                if google_oauth.is_authenticated():
+                    st.warning("Could not search Gmail for contacts. Use the 'Pull Contacts from Gmail' button below to retry.")
+                else:
+                    st.warning("Connect your Google account to search Gmail for contacts.")
+
+        else:
+            client_name = "Untitled_Site_Survey"
 
 # Auto-process on upload — runs once per file set, no manual button needed
 if uploaded_files and not st.session_state.get("_auto_processed"):
     st.session_state._auto_processed = True
 
-    with st.status("Processing survey photos...", expanded=True) as status:
-        _step_placeholder = status.empty()
-        _detail_placeholder = status.empty()
-        def _update_processing_progress(percent, message):
-            status.update(label=f"Processing — {int(percent)}%")
-            _detail_placeholder.write(f"⏳ {message}")
+    with _status_col:
+        with st.status("Processing survey photos...", expanded=True) as status:
+            _step_placeholder = status.empty()
+            _detail_placeholder = status.empty()
+            def _update_processing_progress(percent, message):
+                status.update(label=f"Processing — {int(percent)}%")
+                _detail_placeholder.write(f"⏳ {message}")
 
-        try:
-            st.session_state.processed_sites = []
-            st.session_state.active_bg_image = None
-            st.session_state.last_click = {}
-
-            # Save uploaded files to disk so the processor can read them
-            _step_placeholder.write(f"📂 Saving {len(uploaded_files)} uploaded file(s) to disk...")
-            temp_dir = tempfile.mkdtemp(prefix="dfr_ingest_")
-            image_paths_for_processing = []
-            for uploaded_file in uploaded_files:
-                temp_path = os.path.join(temp_dir, uploaded_file.name)
-                with open(temp_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-                image_paths_for_processing.append(temp_path)
-            st.session_state.image_paths = image_paths_for_processing
-
-            # Get Drive manager for processing pipeline
-            proc_drive = None
             try:
-                proc_drive = get_drive_manager()
-            except Exception:
-                pass
+                st.session_state.processed_sites = []
+                st.session_state.active_bg_image = None
+                st.session_state.last_click = {}
 
-            _step_placeholder.write("🔍 Extracting EXIF metadata and clustering by GPS...")
-            site_data = processor.process_and_organize_images(
-                source_dir=temp_dir,
-                output_dir=output_dir,
-                radius_meters=proximity_radius,
-                progress_callback=_update_processing_progress,
-                image_paths=image_paths_for_processing,
-                drive_manager=proc_drive,
-                drive_output_folder_id=st.session_state.get('processed_folder_id')
-            )
+                # Save uploaded files to disk so the processor can read them
+                _step_placeholder.write(f"📂 Saving {len(uploaded_files)} uploaded file(s) to disk...")
+                temp_dir = tempfile.mkdtemp(prefix="dfr_ingest_")
+                image_paths_for_processing = []
+                for uploaded_file in uploaded_files:
+                    temp_path = os.path.join(temp_dir, uploaded_file.name)
+                    with open(temp_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    image_paths_for_processing.append(temp_path)
+                st.session_state.image_paths = image_paths_for_processing
 
-            if not site_data:
-                st.warning("No images with GPS metadata were found in the uploaded files.")
+                # Get Drive manager for processing pipeline
+                proc_drive = None
+                try:
+                    proc_drive = get_drive_manager()
+                except Exception:
+                    pass
 
-            _step_placeholder.write(f"🏗️ Analyzing infrastructure for {len(site_data)} site(s)...")
-            for i, site in enumerate(site_data):
-                status.update(label=f"Analyzing site {i+1}/{len(site_data)}")
-                _step_placeholder.write(f"🔎 Site {i+1}: Running infrastructure detection...")
-                site["analysis"] = analyzer.analyze_site(site)
-                _step_placeholder.write(f"✈️ Site {i+1}: Querying airspace & airfield data...")
-                airfield = reporter.query_nearest_airfield(site['latitude'], site['longitude'])
-                site["airfield_info"] = f"{airfield[0]} ({airfield[1]:.2f} miles)" if airfield else "Lookup failed"
-                airspace = reporter.query_airspace_class(site["latitude"], site["longitude"])
-                site["airspace"] = airspace if airspace else "Lookup failed"
-                for img in site.get("images", []):
-                    if "selected_for_report" not in img:
-                        img["selected_for_report"] = True
+                _step_placeholder.write("🔍 Extracting EXIF metadata and clustering by GPS...")
+                site_data = processor.process_and_organize_images(
+                    source_dir=temp_dir,
+                    output_dir=output_dir,
+                    radius_meters=proximity_radius,
+                    progress_callback=_update_processing_progress,
+                    image_paths=image_paths_for_processing,
+                    drive_manager=proc_drive,
+                    drive_output_folder_id=st.session_state.get('processed_folder_id')
+                )
 
-            st.session_state.processed_sites = site_data
+                if not site_data:
+                    st.warning("No images with GPS metadata were found in the uploaded files.")
 
-            # Auto-populate customer info from metadata
-            if site_data:
-                first_site = site_data[0]
-                first_address = first_site.get("address", "")
-                agency_name = first_site.get("agency_name") or f"{_extract_town_state_from_address(first_address)[0]} Police Department"
+                _step_placeholder.write(f"🏗️ Analyzing infrastructure for {len(site_data)} site(s)...")
+                for i, site in enumerate(site_data):
+                    status.update(label=f"Analyzing site {i+1}/{len(site_data)}")
+                    _step_placeholder.write(f"🔎 Site {i+1}: Running infrastructure detection...")
+                    site["analysis"] = analyzer.analyze_site(site)
+                    _step_placeholder.write(f"✈️ Site {i+1}: Querying airspace & airfield data...")
+                    airfield = reporter.query_nearest_airfield(site['latitude'], site['longitude'])
+                    site["airfield_info"] = f"{airfield[0]} ({airfield[1]:.2f} miles)" if airfield else "Lookup failed"
+                    airspace = reporter.query_airspace_class(site["latitude"], site["longitude"])
+                    site["airspace"] = airspace if airspace else "Lookup failed"
+                    for img in site.get("images", []):
+                        if "selected_for_report" not in img:
+                            img["selected_for_report"] = True
 
-                existing = st.session_state.customer_info
-                st.session_state.customer_info = {
-                    "agency_name": agency_name,
-                    "agency_address": reporter._format_short_address(first_address),
-                    "poc_name": existing.get("poc_name", ""),
-                    "poc_email": existing.get("poc_email", ""),
-                    "poc_phone": existing.get("poc_phone", ""),
-                    "it_director": existing.get("it_director", ""),
-                    "it_email": existing.get("it_email", ""),
-                    "facilities_engineer": existing.get("facilities_engineer", ""),
-                    "facilities_email": existing.get("facilities_email", ""),
-                }
-                # Sync widget keys so text_inputs pick up the new name on rerun
-                st.session_state["_widget_agency_name"] = agency_name
-                st.session_state["_widget_agency_address"] = st.session_state.customer_info["agency_address"]
-                # Update gps_detected_agency to match the final resolved name
-                city = processor.extract_city_from_address(first_address) if first_address else ""
-                st.session_state.gps_detected_agency = {
-                    **st.session_state.get("gps_detected_agency", {}),
-                    "agency_name": agency_name,
-                    "city": city,
-                }
-                _save_session_metadata(site_data)
+                st.session_state.processed_sites = site_data
 
-                # Connected docs search is handled by the auto-trigger after rerun
-                # (see col_c2 auto-trigger block that fires when agency name changes)
+                # Auto-populate customer info from metadata
+                if site_data:
+                    first_site = site_data[0]
+                    first_address = first_site.get("address", "")
+                    agency_name = first_site.get("agency_name") or f"{_extract_town_state_from_address(first_address)[0]} Police Department"
 
-            # Convert to CandidateSite objects
-            st.session_state.candidate_sites = []
-            if site_data:
-                status.update(label="Building candidate sites...")
-                if st.session_state.get("clustering_method") == "DBSCAN (auto)":
-                    all_images = []
-                    for site in site_data:
-                        all_images.extend(site.get("images", []))
-                    clusters = cluster_images_dbscan(all_images)
-                    st.session_state.candidate_sites = cluster_to_candidate_sites(
-                        clusters, agency_name=st.session_state.customer_info.get("agency_name", "")
-                    )
-                else:
-                    st.session_state.candidate_sites = [
-                        CandidateSite.from_site_dict(s) for s in site_data
-                    ]
+                    existing = st.session_state.customer_info
+                    st.session_state.customer_info = {
+                        "agency_name": agency_name,
+                        "agency_address": reporter._format_short_address(first_address),
+                        "poc_name": existing.get("poc_name", ""),
+                        "poc_email": existing.get("poc_email", ""),
+                        "poc_phone": existing.get("poc_phone", ""),
+                        "it_director": existing.get("it_director", ""),
+                        "it_email": existing.get("it_email", ""),
+                        "facilities_engineer": existing.get("facilities_engineer", ""),
+                        "facilities_email": existing.get("facilities_email", ""),
+                    }
+                    # Sync widget keys so text_inputs pick up the new name on rerun
+                    st.session_state["_widget_agency_name"] = agency_name
+                    st.session_state["_widget_agency_address"] = st.session_state.customer_info["agency_address"]
+                    # Update gps_detected_agency to match the final resolved name
+                    city = processor.extract_city_from_address(first_address) if first_address else ""
+                    st.session_state.gps_detected_agency = {
+                        **st.session_state.get("gps_detected_agency", {}),
+                        "agency_name": agency_name,
+                        "city": city,
+                    }
+                    _save_session_metadata(site_data)
 
-                total_cs = len(st.session_state.candidate_sites)
-                for cs_idx, cs in enumerate(st.session_state.candidate_sites, start=1):
-                    status.update(label=f"Enriching site {cs_idx}/{total_cs} with GIS data...")
-                    def _gis_progress(step, _idx=cs_idx, _total=total_cs):
-                        _step_placeholder.write(f"🌐 Site {_idx}/{_total}: {step}")
-                    enrich_gis(cs, progress_callback=_gis_progress)
+                    # Connected docs search is handled by the auto-trigger after rerun
+                    # (see col_c2 auto-trigger block that fires when agency name changes)
 
-            status.update(label="Processing complete!", state="complete", expanded=False)
-            st.rerun()
-        except Exception as e:
-            status.update(label="Processing failed", state="error")
-            st.error(f"Processing failed: {e}")
+                # Convert to CandidateSite objects
+                st.session_state.candidate_sites = []
+                if site_data:
+                    status.update(label="Building candidate sites...")
+                    if st.session_state.get("clustering_method") == "DBSCAN (auto)":
+                        all_images = []
+                        for site in site_data:
+                            all_images.extend(site.get("images", []))
+                        clusters = cluster_images_dbscan(all_images)
+                        st.session_state.candidate_sites = cluster_to_candidate_sites(
+                            clusters, agency_name=st.session_state.customer_info.get("agency_name", "")
+                        )
+                    else:
+                        st.session_state.candidate_sites = [
+                            CandidateSite.from_site_dict(s) for s in site_data
+                        ]
+
+                    total_cs = len(st.session_state.candidate_sites)
+                    for cs_idx, cs in enumerate(st.session_state.candidate_sites, start=1):
+                        status.update(label=f"Enriching site {cs_idx}/{total_cs} with GIS data...")
+                        def _gis_progress(step, _idx=cs_idx, _total=total_cs):
+                            _step_placeholder.write(f"🌐 Site {_idx}/{_total}: {step}")
+                        enrich_gis(cs, progress_callback=_gis_progress)
+
+                status.update(label="Processing complete!", state="complete", expanded=False)
+                st.rerun()
+            except Exception as e:
+                status.update(label="Processing failed", state="error")
+                st.error(f"Processing failed: {e}")
 
 def _render_site_checklist(site, site_idx):
     """Render a unified checklist card for a CandidateSite."""
