@@ -187,8 +187,21 @@ def _save_session_metadata(site_data):
                 print(f"Error saving session metadata: {e}")
 
 
-def _get_displayable_image_path(image_path):
-    """Return a browser-safe image path for Streamlit display, or None if unreadable."""
+def _get_displayable_image_path(image_path, site_folder=None):
+    """Return a browser-safe image path for Streamlit display, or None if unreadable.
+
+    Args:
+        image_path: Primary absolute path to try (dest_path or path from metadata).
+        site_folder: Optional fallback directory. When image_path is stale (e.g. a
+            temp-dir path from a previous session), the function will look for the
+            file by its basename inside site_folder before giving up.
+    """
+    # If the stored path doesn't exist, try resolving by filename inside site_folder
+    if (not image_path or not os.path.exists(image_path)) and site_folder:
+        if image_path:
+            candidate = os.path.join(site_folder, os.path.basename(image_path))
+            if os.path.exists(candidate):
+                image_path = candidate
     if not image_path or not os.path.exists(image_path):
         return None
 
@@ -1262,7 +1275,7 @@ with tab1:
                     global_idx = i + idx_in_chunk
                     with col_thumb[idx_in_chunk]:
                         img_path = img.get('dest_path') or img.get('path')
-                        thumb_path = _get_displayable_image_path(img_path)
+                        thumb_path = _get_displayable_image_path(img_path, site_folder=selected_site.get('folder_path'))
                         if thumb_path:
                             is_active = img['filename'] == st.session_state.active_bg_image
                             st.image(thumb_path, width=60)
@@ -1286,7 +1299,7 @@ with tab1:
 
                 if active_img_meta:
                     bg_path = active_img_meta.get('dest_path') or active_img_meta.get('path')
-                    bg_display_path = _get_displayable_image_path(bg_path)
+                    bg_display_path = _get_displayable_image_path(bg_path, site_folder=selected_site.get('folder_path'))
 
                     # Markers & Image placements state init - per image
                     # Backward compatibility: convert old 'markers' format to new 'markers_by_image' format
