@@ -195,19 +195,24 @@ def _get_displayable_image_path(image_path):
     safe_extensions = (".jpg", ".jpeg", ".png", ".webp")
     ext = os.path.splitext(image_path)[1].lower()
 
-    try:
-        with Image.open(image_path) as img:
-            img.load()
-            if ext in safe_extensions:
-                return image_path
+    # Browser-safe formats can be served directly
+    if ext in safe_extensions:
+        return image_path
 
-            preview_dir = os.path.join(os.path.dirname(image_path), ".previews")
-            os.makedirs(preview_dir, exist_ok=True)
-            preview_name = f"{os.path.splitext(os.path.basename(image_path))[0]}.png"
-            preview_path = os.path.join(preview_dir, preview_name)
-            if not os.path.exists(preview_path):
-                img.convert("RGB").save(preview_path, "PNG")
-            return preview_path
+    # Non-safe formats (HEIC, TIFF, etc.) need conversion to PNG
+    preview_dir = os.path.join(os.path.dirname(image_path), ".previews")
+    os.makedirs(preview_dir, exist_ok=True)
+    preview_name = f"{os.path.splitext(os.path.basename(image_path))[0]}.png"
+    preview_path = os.path.join(preview_dir, preview_name)
+
+    if os.path.exists(preview_path):
+        return preview_path
+
+    try:
+        img = Image.open(image_path)
+        img.convert("RGB").save(preview_path, "PNG")
+        img.close()
+        return preview_path
     except Exception as e:
         print(f"Image preview unavailable for {image_path}: {e}")
         return None
