@@ -24,6 +24,11 @@ from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 
+try:
+    from reporter import _format_short_address as _report_short_address
+except Exception:
+    _report_short_address = None
+
 def _exifread_ratio_to_float(value):
     """Convert ExifRead Ratio objects or numeric values to float."""
     if hasattr(value, 'num') and hasattr(value, 'den'):
@@ -503,6 +508,17 @@ def _sanitize_folder_name(value, fallback="Police_Department"):
     return name or fallback
 
 
+def _drive_site_folder_name(full_address, site_id=None):
+    """Build a readable Drive folder name for a site using its address."""
+    short_address = _report_short_address(full_address) if _report_short_address else full_address
+    address_name = _sanitize_folder_name(short_address, fallback="")
+    if address_name:
+        return address_name
+    if site_id:
+        return _sanitize_folder_name(site_id, fallback="Site")
+    return "Site"
+
+
 def _derive_department_folder_name(full_address=None, agency_name=None):
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -691,7 +707,10 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
         try:
             for site in site_data:
                 # Upload site folder structure to Drive
-                site_folder_name = site.get('folder_name', f"Site_{site['site_id']}")
+                site_folder_name = _drive_site_folder_name(
+                    site.get('address'),
+                    site.get('site_id')
+                )
                 drive_site_folder_id = drive_manager.get_or_create_folder(
                     drive_output_folder_id,
                     site_folder_name

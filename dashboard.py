@@ -112,7 +112,22 @@ if "customer_info" not in st.session_state:
         "it_director": "",
         "it_email": "",
         "facilities_engineer": "",
-        "facilities_email": ""
+        "facilities_email": "",
+        "rtcc_name": "",
+        "rtcc_email": "",
+        "radio_shop_name": "",
+        "radio_shop_email": "",
+        "crane_contractor": "",
+        "tower_climber_contractor": "",
+        "brinc_pm": "",
+        "survey_delivery_target": "",
+        "power_circuit_requirements": "",
+        "internet_ethernet_access": "",
+        "follow_up_requirements": "",
+        "action_items": "",
+        "surveyor": "",
+        "survey_date": "",
+        "report_date": "",
     }
 if "active_bg_image" not in st.session_state:
     st.session_state.active_bg_image = None
@@ -476,7 +491,7 @@ with st.sidebar:
     user_email = google_oauth.get_user_email()
     if user_email:
         st.success(f"Signed in as {user_email}")
-        if st.button("Sign Out", use_container_width=True):
+        if st.button("Sign Out", width="stretch"):
             st.session_state.pop("google_oauth_token", None)
             st.session_state.pop("google_oauth_email", None)
             google_oauth._delete_token_file()
@@ -636,6 +651,18 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                         "it_email": existing.get("it_email", ""),
                         "facilities_engineer": existing.get("facilities_engineer", ""),
                         "facilities_email": existing.get("facilities_email", ""),
+                        "rtcc_name": existing.get("rtcc_name", ""),
+                        "rtcc_email": existing.get("rtcc_email", ""),
+                        "radio_shop_name": existing.get("radio_shop_name", ""),
+                        "radio_shop_email": existing.get("radio_shop_email", ""),
+                        "crane_contractor": existing.get("crane_contractor", ""),
+                        "tower_climber_contractor": existing.get("tower_climber_contractor", ""),
+                        "brinc_pm": existing.get("brinc_pm", ""),
+                        "survey_delivery_target": existing.get("survey_delivery_target", ""),
+                        "power_circuit_requirements": existing.get("power_circuit_requirements", ""),
+                        "internet_ethernet_access": existing.get("internet_ethernet_access", ""),
+                        "follow_up_requirements": existing.get("follow_up_requirements", ""),
+                        "action_items": existing.get("action_items", ""),
                         "survey_date": survey_date,
                         "report_date": datetime.datetime.strptime(survey_date, "%Y-%m-%d").strftime("%B %d, %Y") if survey_date else existing.get("report_date", ""),
                         "surveyor": surveyor,
@@ -889,7 +916,7 @@ with tab1:
                 st.rerun()
 
             # Manual refresh button
-            if st.button("🔄 Refresh Connected Docs", use_container_width=True):
+            if st.button("🔄 Refresh Connected Docs", width="stretch"):
                 if not agency:
                     st.warning("Enter or detect an Agency Name first.")
                 else:
@@ -1277,7 +1304,7 @@ with tab1:
                     icon=folium.Icon(color="red", icon="tower-broadcast", prefix="fa"),
                 ).add_to(m)
 
-            st_folium(m, use_container_width=True, height=450, returned_objects=[])
+            st_folium(m, width=None, height=450, returned_objects=[])
             
             # Show detailed card for selected site
             def _site_label(idx):
@@ -1344,7 +1371,7 @@ with tab1:
                             is_active = img['filename'] == st.session_state.active_bg_image
                             st.image(thumb_path, width=60)
                             btn_label = "🎯 Active" if is_active else "Select"
-                            if st.button(btn_label, key=f"sel_thumb_{selected_site['site_id']}_{global_idx}", use_container_width=True):
+                            if st.button(btn_label, key=f"sel_thumb_{selected_site['site_id']}_{global_idx}", width="stretch"):
                                 st.session_state.active_bg_image = img['filename']
                                 st.session_state.last_click[selected_site['site_id']] = None
                                 st.rerun()
@@ -1591,7 +1618,7 @@ with tab1:
                         selected_site['eng_note'] = st.text_area("Engineer's Notes Text", value=selected_site['eng_note'], key=f"int_engnote_{selected_site['site_id']}")
                     with col_btn2:
                         st.markdown("<br>", unsafe_allow_html=True)
-                        if st.button("🗑️ Clear All Placements", use_container_width=True, key=f"int_clearnode_{selected_site['site_id']}"):
+                        if st.button("🗑️ Clear All Placements", key=f"int_clearnode_{selected_site['site_id']}", width="stretch"):
                             selected_site['markers_by_image'][st.session_state.active_bg_image] = []
                             selected_site['image_placements_by_image'][st.session_state.active_bg_image] = []
                             if os.path.exists(output_drawing_path):
@@ -1600,7 +1627,7 @@ with tab1:
                             st.warning("Cleared all nodes and images for this photo.")
                             st.rerun()
 
-                        if st.button("🔄 Refresh Rendering", use_container_width=True, key=f"int_redraw_{selected_site['site_id']}"):
+                        if st.button("🔄 Refresh Rendering", key=f"int_redraw_{selected_site['site_id']}", width="stretch"):
                             reporter.create_engineering_drawing(
                                 bg_display_path or bg_path,
                                 output_drawing_path,
@@ -1615,7 +1642,7 @@ with tab1:
 
                     # Show drawing preview below buttons if it exists
                     if os.path.exists(output_drawing_path):
-                        st.image(output_drawing_path, caption="Active Engineering Markup Layout Preview", use_container_width=True)
+                        st.image(output_drawing_path, caption="Active Engineering Markup Layout Preview", width="stretch")
             else:
                 st.warning("Please upload or process images first to mark up.")
                 
@@ -1634,7 +1661,7 @@ with tab1:
                 value=True,
                 key="use_new_report",
             )
-            if st.button("📄 Build Report & Upload to Drive", use_container_width=True):
+            if st.button("📄 Build Report & Upload to Drive", width="stretch"):
                 with st.status("Building report & uploading...", expanded=True) as report_status:
                     try:
                         survey_date = _derive_survey_date_from_sites(st.session_state.processed_sites)
@@ -1679,13 +1706,26 @@ with tab1:
                             rep_fid = report_drive.get_or_create_folder(client_fid, "03_Reports")
                             meta_fid = report_drive.get_or_create_folder(client_fid, "04_Metadata")
 
+                            raw_image_folder_ids = {}
+                            for site in st.session_state.processed_sites:
+                                site_folder_name = processor._drive_site_folder_name(
+                                    site.get("address"),
+                                    site.get("site_id"),
+                                )
+                                site_raw_fid = report_drive.get_or_create_folder(raw_fid, site_folder_name)
+                                for img in site.get("images", []):
+                                    filename = img.get("filename")
+                                    if filename and filename not in raw_image_folder_ids:
+                                        raw_image_folder_ids[filename] = site_raw_fid
+
                             total_upload = len(uploaded_files)
                             for idx, uploaded_file in enumerate(uploaded_files):
                                 report_status.write(f"☁️ Uploading image {idx+1}/{total_upload}: {uploaded_file.name}")
                                 temp_path = os.path.join(tempfile.gettempdir(), uploaded_file.name)
                                 with open(temp_path, "wb") as f:
                                     f.write(uploaded_file.getbuffer())
-                                report_drive.upload_file(temp_path, raw_fid)
+                                target_raw_folder = raw_image_folder_ids.get(uploaded_file.name, raw_fid)
+                                report_drive.upload_file(temp_path, target_raw_folder)
 
                             st.session_state.client_folder_id = client_fid
                             st.session_state.raw_images_folder_id = raw_fid
@@ -1830,7 +1870,7 @@ with tab1:
                         if "Lansing" in display_name:
                             display_name = "Lansing Illinois Police"
 
-                    if st.button(display_name, key=f"prev_sess_btn_{d}", use_container_width=True):
+                    if st.button(display_name, key=f"prev_sess_btn_{d}", width="stretch"):
                         if os.path.exists(meta_file):
                             try:
                                 with open(meta_file, "r") as mf:
@@ -1859,7 +1899,7 @@ with tab2:
     
     with col_x:
         st.markdown("#### CRM & Kickoff Scheduler")
-        if st.button("🔍 Fetch Customer Purchase Info (HubSpot)", use_container_width=True, key="hs_sync_tab2"):
+        if st.button("🔍 Fetch Customer Purchase Info (HubSpot)", key="hs_sync_tab2", width="stretch"):
             agency = st.session_state.customer_info.get("agency_name", "")
             if not agency:
                 st.warning("Enter an Agency Name on the Survey Pipeline tab first.")
@@ -1885,11 +1925,11 @@ with tab2:
                 else:
                     st.info("No HubSpot records found for this agency.")
             
-        if st.button("📅 Schedule Kickoff Meeting (Google Calendar)", use_container_width=True, key="cal_sync_tab2"):
+        if st.button("📅 Schedule Kickoff Meeting (Google Calendar)", key="cal_sync_tab2", width="stretch"):
             st.session_state.integration_logs.append("[Google Calendar API] POST /events - Scheduled Kickoff for Lansing PD")
             st.success("Meeting Scheduled & Invites sent to stakeholders.")
 
-        if st.button("☁️ Sync Report to Google Drive", use_container_width=True, key="drive_sync_tab2"):
+        if st.button("☁️ Sync Report to Google Drive", key="drive_sync_tab2", width="stretch"):
             if hasattr(st.session_state, 'generated_report'):
                 st.session_state.integration_logs.append(f"[Google Drive API] POST /files - Uploaded '{os.path.basename(st.session_state.generated_report)}'")
                 st.success("Report synchronized to cloud storage.")
@@ -1898,7 +1938,7 @@ with tab2:
 
     with col_y:
         st.markdown("#### Operations & Communication")
-        if st.button("🎫 Search Jira Tickets", use_container_width=True, key="jira_sync_tab2"):
+        if st.button("🎫 Search Jira Tickets", key="jira_sync_tab2", width="stretch"):
             agency = st.session_state.customer_info.get("agency_name", "")
             if not agency:
                 st.warning("Enter an Agency Name on the Survey Pipeline tab first.")
@@ -1925,7 +1965,7 @@ with tab2:
                 else:
                     st.info("No Jira tickets found for this agency.")
             
-        if st.button("💬 Send Project Status to Slack", use_container_width=True, key="slack_sync_tab2"):
+        if st.button("💬 Send Project Status to Slack", key="slack_sync_tab2", width="stretch"):
             st.session_state.integration_logs.append("[Slack Webhook] POST /hooks - Posted Lansing PD survey status")
             st.success("Notification broadcasted to Slack channels.")
 
