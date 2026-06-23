@@ -17,12 +17,21 @@ import google_oauth
 # Emails that should never appear as contacts (exact match on lowercased email)
 _BLOCKED_EMAILS = {
     "calendar-notification@google.com",
+    "gemini-notes@google.com",
+    "drive-shares-dm-noreply@google.com",
 }
 
 # Email local-part prefixes that indicate automated/non-person senders
 _BLOCKED_EMAIL_PREFIXES = re.compile(
     r'^(noreply|no-reply|donotreply|do-not-reply)@', re.IGNORECASE,
 )
+
+# Generic department/non-person local parts (exact match on lowercased local part)
+_BLOCKED_EMAIL_LOCAL_PARTS = {
+    "police", "fire", "sheriff", "dispatch", "records", "pio",
+    "communications", "admin", "info", "support", "helpdesk",
+    "publicworks", "facilities", "jail", "corrections",
+}
 
 
 def _get_gmail_service():
@@ -47,6 +56,13 @@ def _is_blocked_email(email):
     if lower in _BLOCKED_EMAILS:
         return True
     if _BLOCKED_EMAIL_PREFIXES.match(lower):
+        return True
+    local = lower.split("@")[0]
+    # Catch noreply anywhere in local part (e.g. drive-shares-dm-noreply@google.com)
+    if re.search(r'noreply|no.reply|donotreply', local):
+        return True
+    # Catch generic department mailboxes (police@, fire@, dispatch@, etc.)
+    if local in _BLOCKED_EMAIL_LOCAL_PARTS:
         return True
     return False
 
@@ -1024,5 +1040,86 @@ def search_hubspot_for_records(agency_name, hubspot_token=None):
         result["status"] = "connected"
     else:
         result["status"] = "no_results"
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar: Events Search by Agency Name
+# ---------------------------------------------------------------------------
+
+def search_calendar_for_events(agency_name, city=None):
+    """Search Google Calendar for events/meetings related to the agency.
+
+    Returns:
+        {
+            "status": "connected" | "no_results" | "auth_error",
+            "events": [{"title", "date", "url", "attendees_count"}],
+            "error": str (on auth_error only),
+        }
+    """
+    result = {"status": "no_results", "events": []}
+
+    try:
+        calendar = _get_calendar_service()
+        if not calendar:
+            result["status"] = "auth_error"
+            result["error"] = "Could not connect to Google Calendar."
+            return result
+
+        search_terms = _build_search_terms(agency_name, city)
+
+        seen_ids = set()
+        events_out = []
+
+        for term in search_terms:
+            try:
+                resp = calendar.events().list(
+                    calendarId="primary",
+                    q=term,
+                    maxResults=20,
+                    singleEvents=True,
+                    orderBy="startTime",
+                ).execute()
+                for event in resp.get("items", []):
+                    eid = event.get("id", "")
+                    if eid in seen_ids:
+                        continue
+                    seen_ids.add(eid)
+                    title = event.get("summary", "(No title)")
+                    start = event.get("start", {})
+                    date_str = start.get("dateTime", start.get("date", ""))
+                    url = event.get("htmlLink", "")
+                    attendees = event.get("attendees", [])
+                    external = [
+                        a for a in attendees
+                        if not a.get("resource")
+                        and "brincdrones.com" not in a.get("email", "").lower()
+                    ]
+                    events_out.append({
+                        "title": title,
+                        "date": date_str,
+                        "url": url,
+                        "attendees_count": len(external),
+                    })
+            except Exception as e:
+                print(f"Calendar event search error for '{term}': {e}")
+
+        # Sort descending by date so most recent first
+        events_out.sort(key=lambda e: e["date"], reverse=True)
+
+        if events_out:
+            result["status"] = "connected"
+            result["events"] = events_out
+        else:
+            result["status"] = "no_results"
+
+    except Exception as e:
+        err_str = str(e)
+        if "403" in err_str or "401" in err_str:
+            result["status"] = "auth_error"
+            result["error"] = err_str
+        else:
+            print(f"Calendar search_calendar_for_events error: {e}")
+
+    return result
 
     return result

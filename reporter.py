@@ -917,6 +917,40 @@ def add_styled_table(doc, data, headers):
 
     doc.add_paragraph()
 
+def _add_poc_table(doc, customer_info):
+    """Build a 5-column Points of Contact table from customer_info['contacts'] or legacy fields."""
+    contacts = (customer_info or {}).get("contacts") or []
+
+    if not contacts and customer_info:
+        # Derive rows from legacy flat fields so old data still renders
+        def _row(role, name, title, email, phone=""):
+            return {"role": role, "name": name, "title": title, "email": email, "phone": phone}
+
+        poc = customer_info.get("poc_name", "")
+        if poc:
+            contacts.append(_row("", poc, "", customer_info.get("poc_email", ""), customer_info.get("poc_phone", "")))
+        it = customer_info.get("it_director", "")
+        if it:
+            contacts.append(_row("", it, "IT Director", customer_info.get("it_email", "")))
+        fac = customer_info.get("facilities_engineer", "")
+        if fac:
+            contacts.append(_row("", fac, "Facilities Engineer", customer_info.get("facilities_email", "")))
+        rtcc = customer_info.get("rtcc_name", "")
+        if rtcc and rtcc != "DNA":
+            contacts.append(_row("RTCC/RTIC", rtcc, "", customer_info.get("rtcc_email", "")))
+        pm = customer_info.get("brinc_pm", "")
+        if pm:
+            contacts.append(_row("BRINC Project Manager", pm, "", ""))
+
+    h = doc.add_paragraph()
+    h.add_run("POINTS OF CONTACT").bold = True
+    h.runs[0].font.size = Pt(12)
+
+    data = [(c.get("role", ""), c.get("name", ""), c.get("title", ""),
+             c.get("email", ""), c.get("phone", "")) for c in contacts]
+    add_styled_table(doc, data, ["Role", "Name", "Title / Rank", "Email", "Phone"])
+
+
 def generate_word_report(site_data_list, output_filepath, customer_info=None, drive_manager=None, drive_reports_folder_id=None, progress_callback=None):
     """
     Generate the Site Survey Word Document.
@@ -987,23 +1021,8 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
         doc.add_picture(map_image_path, width=Inches(6.0))
         doc.add_paragraph()
         
-    # 2. General Contact Information Table
-    h_general = doc.add_paragraph()
-    h_general.add_run("GENERAL CONTACT INFORMATION").bold = True
-    h_general.runs[0].font.size = Pt(12)
-    
-    contact_data = [
-        ("Agency Name & Address", f"{customer_info.get('agency_name')}\n{customer_info.get('agency_address')}"),
-        ("Point of Contact (POC)", f"{customer_info.get('poc_name')} | {customer_info.get('poc_email')} | {customer_info.get('poc_phone')}"),
-        ("RTCC/RTIC", f"{customer_info.get('rtcc_name', 'DNA')} | {customer_info.get('rtcc_email', '')}".rstrip(" |")),
-        ("Information Technology (IT)", f"{customer_info.get('it_director')} | {customer_info.get('it_email')}"),
-        ("Facilities Engineer", f"{customer_info.get('facilities_engineer')} | {customer_info.get('facilities_email')}"),
-        ("Radio Shop Engineer", f"{customer_info.get('radio_shop_name', 'DNA')} | {customer_info.get('radio_shop_email', '')}".rstrip(" |")),
-        ("Crane Contractor", customer_info.get("crane_contractor", "DNA")),
-        ("Tower Climber Contractor", customer_info.get("tower_climber_contractor", "DNA")),
-        ("BRINC Project Manager", customer_info.get("brinc_pm", "")),
-    ]
-    add_styled_table(doc, contact_data, ["CONTACT INFORMATION", "NOTES / VALUE"])
+    # 2. Points of Contact Table
+    _add_poc_table(doc, customer_info)
 
     # 3. Installation Timeframe
     delivery_target = customer_info.get("survey_delivery_target", "TBD")
@@ -1185,18 +1204,7 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
     doc.add_paragraph(f"Surveyor: {surveyor}")
     doc.add_paragraph(f"Candidate Sites Found: {len(candidate_sites)}")
 
-    contact_data = [
-        ("Agency Name & Address", f"{customer_info.get('agency_name')}\n{customer_info.get('agency_address')}") if customer_info else ("Agency Name & Address", ""),
-        ("Point of Contact (POC)", f"{customer_info.get('poc_name')} | {customer_info.get('poc_email')} | {customer_info.get('poc_phone')}") if customer_info else ("Point of Contact (POC)", ""),
-        ("RTCC/RTIC", f"{customer_info.get('rtcc_name', 'DNA')} | {customer_info.get('rtcc_email', '')}".rstrip(" |")) if customer_info else ("RTCC/RTIC", "DNA"),
-        ("Information Technology (IT)", f"{customer_info.get('it_director')} | {customer_info.get('it_email')}") if customer_info else ("Information Technology (IT)", ""),
-        ("Facilities Engineer", f"{customer_info.get('facilities_engineer')} | {customer_info.get('facilities_email')}") if customer_info else ("Facilities Engineer", ""),
-        ("Radio Shop Engineer", f"{customer_info.get('radio_shop_name', 'DNA')} | {customer_info.get('radio_shop_email', '')}".rstrip(" |")) if customer_info else ("Radio Shop Engineer", "DNA"),
-        ("Crane Contractor", customer_info.get("crane_contractor", "DNA")) if customer_info else ("Crane Contractor", "DNA"),
-        ("Tower Climber Contractor", customer_info.get("tower_climber_contractor", "DNA")) if customer_info else ("Tower Climber Contractor", "DNA"),
-        ("BRINC Project Manager", customer_info.get("brinc_pm", "")) if customer_info else ("BRINC Project Manager", ""),
-    ]
-    add_styled_table(doc, contact_data, ["CONTACT INFORMATION", "NOTES / VALUE"])
+    _add_poc_table(doc, customer_info)
     doc.add_page_break()
 
     # ── 2. Candidate Site Sections ──

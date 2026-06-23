@@ -340,7 +340,7 @@ def _run_connected_docs_search(agency, city=""):
 
     Returns True if any search produced results.
     """
-    from gmail_lookup import search_drive_for_gemini_notes, search_jira_for_tickets, search_hubspot_for_records
+    from gmail_lookup import search_drive_for_gemini_notes, search_jira_for_tickets, search_hubspot_for_records, search_calendar_for_events
 
     found_any = False
 
@@ -410,6 +410,17 @@ def _run_connected_docs_search(agency, city=""):
         found_any = True
     elif hubspot_results["status"] == "error":
         st.session_state.integration_logs.append(f"[HubSpot API] Error: {hubspot_results['error']}")
+
+    # Calendar events
+    calendar_results = search_calendar_for_events(agency, city)
+    st.session_state["calendar_results"] = calendar_results
+    if calendar_results["status"] == "connected":
+        st.session_state.integration_logs.append(
+            f"[Calendar API] Found {len(calendar_results['events'])} events for {agency}"
+        )
+        found_any = True
+    elif calendar_results["status"] == "auth_error":
+        st.session_state.integration_logs.append(f"[Calendar API] Auth error: {calendar_results.get('error', '')}")
 
     st.session_state._last_doc_search_agency = agency
     return found_any
@@ -1017,6 +1028,30 @@ with tab1:
         elif hubspot_data and hubspot_data.get("status") == "error":
             st.caption(f"⚠️ HubSpot: {hubspot_data.get('error', 'Unknown error')}")
 
+        # --- Calendar Events ---
+        cal_data = st.session_state.get("calendar_results")
+        if cal_data and cal_data.get("status") == "connected":
+            has_any = True
+            st.markdown("---")
+            st.markdown("**📅 Calendar Events**")
+            for event in cal_data.get("events", []):
+                title = event.get("title", "Untitled")
+                date = event.get("date", "")
+                url = event.get("url", "")
+                attendees_count = event.get("attendees_count", 0)
+                short_title = title[:60] + "..." if len(title) > 60 else title
+                if url:
+                    st.markdown(f"[{short_title}]({url})")
+                else:
+                    st.caption(short_title)
+                detail = date[:10] if date else ""
+                if attendees_count:
+                    detail += f"  ·  {attendees_count} attendee{'s' if attendees_count != 1 else ''}"
+                if detail:
+                    st.caption(detail)
+        elif cal_data and cal_data.get("status") == "auth_error":
+            st.caption(f"⚠️ Calendar: {cal_data.get('error', 'Auth error')}")
+
         if not has_any:
             st.caption("No connected documents yet. Enter an Agency Name to auto-search.")
 
@@ -1164,6 +1199,20 @@ with tab1:
         elif role == "Radio Shop" and not st.session_state.customer_info["radio_shop_name"]:
             st.session_state.customer_info["radio_shop_name"] = row["name"]
             st.session_state.customer_info["radio_shop_email"] = row["email"]
+
+    # Keep the structured contact list in sync for report generation.
+    # The report template prefers customer_info["contacts"] when present.
+    st.session_state.customer_info["contacts"] = [
+        {
+            "role": row.get("role", ""),
+            "name": row.get("name", ""),
+            "title": row.get("title", ""),
+            "email": row.get("email", ""),
+            "phone": row.get("phone", ""),
+        }
+        for row in st.session_state.poc_rows
+        if row.get("role") or row.get("name") or row.get("title") or row.get("email") or row.get("phone")
+    ]
 
     # --- Deployment Specifications ---
     st.markdown("**Deployment Specifications**")
@@ -1716,8 +1765,9 @@ with tab1:
                                         raw_image_folder_ids[filename] = site_raw_fid
 
                             total_upload = len(uploaded_files)
+                            upload_line = st.empty()
                             for idx, uploaded_file in enumerate(uploaded_files):
-                                report_status.write(f"☁️ Uploading image {idx+1}/{total_upload}: {uploaded_file.name}")
+                                upload_line.write(f"☁️ Uploading image {idx+1}/{total_upload}: {uploaded_file.name}")
                                 temp_path = os.path.join(tempfile.gettempdir(), uploaded_file.name)
                                 with open(temp_path, "wb") as f:
                                     f.write(uploaded_file.getbuffer())

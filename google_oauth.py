@@ -178,6 +178,7 @@ def handle_callback():
             creds.id_token,
             google_requests.Request(),
             st.secrets["GOOGLE_OAUTH_CLIENT_ID"],
+            clock_skew_in_seconds=10,
         )
         user_email = id_info.get("email", "")
 

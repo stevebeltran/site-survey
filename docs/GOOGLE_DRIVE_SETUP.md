@@ -18,7 +18,7 @@
 
 ### 3. Share Google Drive Folder
 
-- The team folder: https://drive.google.com/drive/folders/1FXXNVLaAFWSc1HYDUx8lyaosqF9BJdgL
+- The team folder: https://drive.google.com/drive/folders/1sAUvNMyqCVeEm0ivKpwFMIEmKaZUuFrx
 - Right-click → Share
 - Share with service account email (from JSON key, looks like: `xxx@xxx.iam.gserviceaccount.com`)
 - Grant "Editor" access
@@ -28,7 +28,7 @@
 - Go to https://share.streamlit.io/ → select your app → Settings
 - In "Secrets" section, paste:
   - `GOOGLE_DRIVE_CREDENTIALS` = entire service account JSON as a string
-  - `GOOGLE_DRIVE_TEAM_FOLDER_ID` = `1FXXNVLaAFWSc1HYDUx8lyaosqF9BJdgL`
+  - `GOOGLE_DRIVE_TEAM_FOLDER_ID` = `1sAUvNMyqCVeEm0ivKpwFMIEmKaZUuFrx`
   - `TEAM_EMAILS` = `steven.beltran@brincdrones.com,david.campise@brincdrones.com`
 
 ### 5. Deploy to Streamlit Cloud
@@ -53,7 +53,7 @@
 After setup, Google Drive will contain:
 
 ```
-1FXXNVLaAFWSc1HYDUx8lyaosqF9BJdgL (Team Site Survey folder)
+1sAUvNMyqCVeEm0ivKpwFMIEmKaZUuFrx (Team Site Survey folder)
 ├── [Client Name]_20260618_143022/
 │   ├── 01_Raw_Images/
 │   ├── 02_Processed_Sites/

@@ -225,19 +225,20 @@ def cluster_images_dbscan(images_meta, eps_meters=90.0, min_samples=1):
     return list(clusters_dict.values())
 
 
-def split_clusters_by_time_gap(clusters, gap_minutes=10):
-    """Split clusters where consecutive photos have a large time gap.
+def split_clusters_by_time_gap(clusters, gap_minutes=10, min_spatial_meters=50):
+    """Split clusters where consecutive photos have both a large time gap and spatial separation.
 
-    When a surveyor drives between sites, photos within the same spatial
-    cluster may span a long time gap.  Splitting on that gap separates
-    the two logical sites.
+    Requires BOTH conditions to split: time gap >= gap_minutes AND the centroid of the
+    current group is >= min_spatial_meters from the next photo. This prevents splitting
+    a single physical site where a surveyor paused before continuing to photograph.
 
     Args:
         clusters: list of lists of image meta dicts (each dict has 'time').
         gap_minutes: minimum gap in minutes to trigger a split.
+        min_spatial_meters: minimum centroid-to-point distance in meters to trigger a split.
 
     Returns:
-        list of lists — same shape, but clusters with internal time gaps
+        list of lists — same shape, but clusters with internal time AND spatial gaps
         are split into separate entries.
     """
     from datetime import timedelta
@@ -246,7 +247,6 @@ def split_clusters_by_time_gap(clusters, gap_minutes=10):
     result = []
 
     for cluster in clusters:
-        # Sort by capture time; images without timestamps stay together
         timed = [img for img in cluster if img.get("time") is not None]
         untimed = [img for img in cluster if img.get("time") is None]
 
@@ -258,14 +258,19 @@ def split_clusters_by_time_gap(clusters, gap_minutes=10):
         current_group = [timed[0]]
 
         for prev, curr in zip(timed, timed[1:]):
-            if curr["time"] - prev["time"] >= gap_threshold:
-                # Flush current group
-                result.append(current_group)
-                current_group = [curr]
-            else:
-                current_group.append(curr)
+            time_gap = curr["time"] - prev["time"] >= gap_threshold
+            if time_gap and curr.get("lat") and curr.get("lon"):
+                lats = [m["lat"] for m in current_group if m.get("lat")]
+                lons = [m["lon"] for m in current_group if m.get("lon")]
+                if lats and lons:
+                    centroid = (sum(lats) / len(lats), sum(lons) / len(lons))
+                    dist = geodesic(centroid, (curr["lat"], curr["lon"])).meters
+                    if dist >= min_spatial_meters:
+                        result.append(current_group)
+                        current_group = [curr]
+                        continue
+            current_group.append(curr)
 
-        # Attach untimed images to the last group
         current_group.extend(untimed)
         result.append(current_group)
 

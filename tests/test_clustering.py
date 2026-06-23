@@ -67,15 +67,16 @@ class TestTimeGapSplitting:
         assert len(result) == 1
         assert len(result[0]) == 3
 
-    def test_split_on_large_gap(self):
-        """A 15-minute gap between photos should split the cluster."""
+    def test_split_on_large_gap_and_spatial_separation(self):
+        """15-min gap + >50m spatial separation should split the cluster."""
         from datetime import datetime
+        # Site A: ~41.86 lat, Site B: ~41.8607 lat (~78m north)
         cluster = [
             [
                 {"path": "a.jpg", "lat": 41.86, "lon": -87.66, "time": datetime(2026, 6, 22, 14, 0)},
                 {"path": "b.jpg", "lat": 41.86, "lon": -87.66, "time": datetime(2026, 6, 22, 14, 3)},
-                {"path": "c.jpg", "lat": 41.86, "lon": -87.66, "time": datetime(2026, 6, 22, 14, 20)},
-                {"path": "d.jpg", "lat": 41.86, "lon": -87.66, "time": datetime(2026, 6, 22, 14, 22)},
+                {"path": "c.jpg", "lat": 41.8607, "lon": -87.66, "time": datetime(2026, 6, 22, 14, 20)},
+                {"path": "d.jpg", "lat": 41.8607, "lon": -87.66, "time": datetime(2026, 6, 22, 14, 22)},
             ]
         ]
         result = split_clusters_by_time_gap(cluster)
@@ -83,20 +84,36 @@ class TestTimeGapSplitting:
         assert [img["path"] for img in result[0]] == ["a.jpg", "b.jpg"]
         assert [img["path"] for img in result[1]] == ["c.jpg", "d.jpg"]
 
+    def test_no_split_same_location_large_time_gap(self):
+        """Large time gap at same physical location should NOT split (e.g. surveyor paused at Town Hall)."""
+        from datetime import datetime
+        # 22m apart — well within 50m spatial threshold
+        cluster = [
+            [
+                {"path": "a.jpg", "lat": 39.9522, "lon": -86.2750, "time": datetime(2026, 6, 22, 14, 0)},
+                {"path": "b.jpg", "lat": 39.9522, "lon": -86.2750, "time": datetime(2026, 6, 22, 14, 3)},
+                {"path": "c.jpg", "lat": 39.9520, "lon": -86.2750, "time": datetime(2026, 6, 22, 14, 20)},
+                {"path": "d.jpg", "lat": 39.9520, "lon": -86.2750, "time": datetime(2026, 6, 22, 14, 22)},
+            ]
+        ]
+        result = split_clusters_by_time_gap(cluster)
+        assert len(result) == 1
+        assert len(result[0]) == 4
+
     def test_untimed_images_attached_to_last_group(self):
         """Images without timestamps go with the last temporal group."""
         from datetime import datetime
+        # Use spatially separated coords so split triggers
         cluster = [
             [
                 {"path": "a.jpg", "lat": 41.86, "lon": -87.66, "time": datetime(2026, 6, 22, 14, 0)},
-                {"path": "b.jpg", "lat": 41.86, "lon": -87.66, "time": datetime(2026, 6, 22, 14, 20)},
-                {"path": "no_time.jpg", "lat": 41.86, "lon": -87.66, "time": None},
+                {"path": "b.jpg", "lat": 41.8607, "lon": -87.66, "time": datetime(2026, 6, 22, 14, 20)},
+                {"path": "no_time.jpg", "lat": 41.8607, "lon": -87.66, "time": None},
             ]
         ]
         result = split_clusters_by_time_gap(cluster)
         assert len(result) == 2
         assert result[0] == [cluster[0][0]]
-        # Last group gets the timed image + untimed image
         paths = [img["path"] for img in result[1]]
         assert "b.jpg" in paths
         assert "no_time.jpg" in paths
