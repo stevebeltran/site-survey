@@ -298,7 +298,7 @@ def render_connect_button(label="Connect Google Account"):
     """
     try:
         auth_url = get_auth_url()
-        st.link_button(f"🔗 {label}", auth_url, use_container_width=True)
+        st.link_button(f"🔗 {label}", auth_url, width="stretch")
     except Exception:
         st.warning("Google OAuth not configured. Add GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and GOOGLE_OAUTH_REDIRECT_URI to Streamlit secrets.")
 

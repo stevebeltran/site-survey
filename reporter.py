@@ -1,4 +1,5 @@
 import os
+import json
 import re
 import datetime
 import logging
@@ -349,9 +350,13 @@ def query_airspace_class(lat, lon):
     """
     Lookup Airspace Class (B, C, D, E, G) for coordinate.
     """
-    faa_url = "https://services.arcgis.com/ssuPAZ6sA156nEBb/arcgis/rest/services/US_Class_Airspace/FeatureServer/0/query"
+    faa_url = "https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/services/Class_Airspace/FeatureServer/0/query"
     params = {
-        "geometry": f"{lon},{lat}",
+        "geometry": json.dumps({
+            "x": lon,
+            "y": lat,
+            "spatialReference": {"wkid": 4326},
+        }),
         "geometryType": "esriGeometryPoint",
         "inSR": "4326",
         "spatialRel": "esriSpatialRelIntersects",
@@ -360,14 +365,23 @@ def query_airspace_class(lat, lon):
         "returnGeometry": "false"
     }
     try:
-        response = requests.get(faa_url, params=params, timeout=1.5)
+        response = requests.get(faa_url, params=params, timeout=10)
         if response.status_code == 200:
             data = response.json()
             features = data.get("features", [])
-            if features:
-                airspace_class = features[0].get("attributes", {}).get("CLASS")
-                if airspace_class:
-                    return f"Controlled (Class {airspace_class})"
+            classes = []
+            for feature in features:
+                airspace_class = feature.get("attributes", {}).get("CLASS")
+                if airspace_class and airspace_class not in classes:
+                    classes.append(airspace_class)
+
+            if classes:
+                class_order = {"A": 0, "B": 1, "C": 2, "D": 3, "E": 4, "G": 5}
+                classes.sort(key=lambda c: class_order.get(c, 99))
+                if len(classes) == 1:
+                    return f"Controlled (Class {classes[0]})"
+                return f"Controlled (Classes {', '.join(classes)})"
+            return "Uncontrolled (Class G)"
     except Exception as e:
         logger.warning("FAA airspace lookup failed: %s", e)
 
