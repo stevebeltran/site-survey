@@ -2,9 +2,13 @@ import os
 import re
 import datetime
 import logging
+import tempfile
+import zipfile
+from xml.sax.saxutils import escape as xml_escape
 import requests
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from geopy.distance import geodesic
 from PIL import Image, ImageDraw, ImageFont
 
@@ -28,6 +32,214 @@ def _load_font(bold=False, size=28):
         except (OSError, IOError):
             continue
     return ImageFont.load_default()
+
+
+def _normalize_date_string(value):
+    """Return YYYY-MM-DD for date-like values, or an empty string."""
+    if not value:
+        return ""
+    if isinstance(value, datetime.datetime):
+        return value.date().isoformat()
+    if isinstance(value, datetime.date):
+        return value.isoformat()
+
+    text = str(value).strip()
+    if not text:
+        return ""
+
+    for fmt in (
+        "%Y-%m-%d",
+        "%Y:%m:%d",
+        "%Y:%m:%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%B %d, %Y",
+        "%m/%d/%Y",
+    ):
+        try:
+            parsed = datetime.datetime.strptime(text, fmt)
+            return parsed.date().isoformat()
+        except ValueError:
+            continue
+
+    try:
+        return datetime.date.fromisoformat(text[:10]).isoformat()
+    except ValueError:
+        return ""
+
+
+def _format_report_date(value):
+    """Return a human-readable date string for the report header."""
+    normalized = _normalize_date_string(value)
+    if normalized:
+        return datetime.datetime.strptime(normalized, "%Y-%m-%d").strftime("%B %d, %Y")
+    return datetime.date.today().strftime("%B %d, %Y")
+
+
+def _extract_survey_date(site_data_list=None, candidate_sites=None, customer_info=None):
+    """Resolve the survey date from EXIF-derived site data when available."""
+    if customer_info:
+        normalized = _normalize_date_string(customer_info.get("survey_date"))
+        if normalized:
+            return normalized
+
+    if candidate_sites:
+        normalized = _normalize_date_string(candidate_sites[0].identity.survey_date)
+        if normalized:
+            return normalized
+
+    date_counts = {}
+    for site in site_data_list or []:
+        site_date = _normalize_date_string(site.get("survey_date"))
+        if site_date:
+            date_counts[site_date] = date_counts.get(site_date, 0) + 1
+        for img in site.get("images", []):
+            capture_time = img.get("time")
+            normalized = _normalize_date_string(capture_time)
+            if normalized:
+                date_counts[normalized] = date_counts.get(normalized, 0) + 1
+
+    if date_counts:
+        return sorted(date_counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+    return ""
+
+
+def _survey_site_records(site_data_list=None, candidate_sites=None):
+    """Normalize either legacy site dicts or CandidateSite objects into map records."""
+    records = []
+    if candidate_sites:
+        for idx, site in enumerate(candidate_sites, start=1):
+            records.append({
+                "latitude": site.identity.site_latitude,
+                "longitude": site.identity.site_longitude,
+                "address": site.identity.site_address or site.identity.site_name or f"Site {idx}",
+                "site_name": site.identity.site_name or f"Site {idx}",
+            })
+        return records
+
+    for idx, site in enumerate(site_data_list or [], start=1):
+        records.append({
+            "latitude": site.get("latitude"),
+            "longitude": site.get("longitude"),
+            "address": site.get("address") or f"Site {idx}",
+            "site_name": site.get("site_name") or site.get("address") or f"Site {idx}",
+        })
+    return records
+
+
+def _build_black_logo_copy():
+    """Create a black version of the BRINC logo for report footers."""
+    logo_path = os.path.join(os.path.dirname(__file__), "images", "BRINC_Logo_White.png")
+    if not os.path.exists(logo_path):
+        return None
+
+    black_logo_path = os.path.join(tempfile.gettempdir(), "brinc_logo_black.png")
+    try:
+        source_mtime = os.path.getmtime(logo_path)
+        if os.path.exists(black_logo_path) and os.path.getmtime(black_logo_path) >= source_mtime:
+            return black_logo_path
+
+        with Image.open(logo_path) as logo_src:
+            logo = logo_src.convert("RGBA")
+            pixels = logo.load()
+            for y in range(logo.height):
+                for x in range(logo.width):
+                    r, g, b, a = pixels[x, y]
+                    if a > 0:
+                        pixels[x, y] = (0, 0, 0, a)
+            logo.save(black_logo_path)
+        return black_logo_path
+    except Exception:
+        return None
+
+
+def _add_report_footer(doc):
+    """Add the BRINC logo to the first section footer."""
+    try:
+        footer = doc.sections[0].footer
+        paragraph = footer.paragraphs[0]
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        logo_path = _build_black_logo_copy()
+        if logo_path:
+            run = paragraph.add_run()
+            run.add_picture(logo_path, width=Inches(1.25))
+    except Exception:
+        pass
+
+
+def export_sites_kmz(site_data_list, output_filepath, candidate_sites=None, ring_radius_miles=2.0):
+    """Export site points and 2-mile rings to a KMZ file."""
+    records = _survey_site_records(site_data_list, candidate_sites)
+    doc_name = os.path.splitext(os.path.basename(output_filepath))[0]
+
+    placemarks = []
+    for idx, site in enumerate(records, start=1):
+        lat = site.get("latitude")
+        lon = site.get("longitude")
+        if lat is None or lon is None:
+            continue
+        site_name = xml_escape(str(site.get("site_name") or f"Site {idx}"))
+        address = xml_escape(str(site.get("address") or ""))
+
+        ring_coords = []
+        for bearing in range(0, 361, 10):
+            ring_point = geodesic(miles=ring_radius_miles).destination((lat, lon), bearing)
+            ring_coords.append(f"{ring_point.longitude:.8f},{ring_point.latitude:.8f},0")
+
+        placemarks.append(f"""
+        <Placemark>
+          <name>{site_name}</name>
+          <description>{address}</description>
+          <Style>
+            <IconStyle><color>ff0000ff</color><scale>1.1</scale></IconStyle>
+          </Style>
+          <Point><coordinates>{lon:.8f},{lat:.8f},0</coordinates></Point>
+        </Placemark>
+        <Placemark>
+          <name>{site_name} - {ring_radius_miles:.0f} Mile Ring</name>
+          <Style>
+            <LineStyle><color>ff0000ff</color><width>2</width></LineStyle>
+            <PolyStyle><color>220000ff</color></PolyStyle>
+          </Style>
+          <Polygon>
+            <outerBoundaryIs>
+              <LinearRing>
+                <coordinates>
+                  {' '.join(ring_coords)}
+                </coordinates>
+              </LinearRing>
+            </outerBoundaryIs>
+          </Polygon>
+        </Placemark>
+        """)
+
+    kml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>{xml_escape(doc_name)}</name>
+    <Style id="sitePoint">
+      <IconStyle>
+        <color>ff0000ff</color>
+        <scale>1.1</scale>
+      </IconStyle>
+    </Style>
+    <Style id="ringStyle">
+      <LineStyle>
+        <color>ff0000ff</color>
+        <width>2</width>
+      </LineStyle>
+      <PolyStyle>
+        <color>220000ff</color>
+      </PolyStyle>
+    </Style>
+    {''.join(placemarks)}
+  </Document>
+</kml>
+"""
+
+    kml_name = os.path.splitext(os.path.basename(output_filepath))[0] + ".kml"
+    with zipfile.ZipFile(output_filepath, "w", zipfile.ZIP_DEFLATED) as kmz:
+        kmz.writestr(kml_name, kml)
+    return output_filepath
 
 
 def _format_short_address(full_address):
@@ -708,6 +920,7 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
 
     _progress("Initializing report document...")
     doc = Document()
+    _add_report_footer(doc)
 
     style = doc.styles['Normal']
     font = style.font
@@ -727,7 +940,12 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
             "facilities_email": "",
             "report_date": datetime.date.today().strftime("%B %d, %Y"),
         }
-    report_date = customer_info.get("report_date", datetime.date.today().strftime("%B %d, %Y"))
+    survey_date = _extract_survey_date(site_data_list=site_data_list, customer_info=customer_info)
+    if survey_date:
+        customer_info["survey_date"] = survey_date
+        customer_info["report_date"] = _format_report_date(survey_date)
+    report_date = customer_info.get("report_date", _format_report_date(survey_date))
+    surveyor = customer_info.get("surveyor", "")
         
     p_title = doc.add_paragraph()
     p_title.alignment = 1
@@ -738,7 +956,11 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
     
     p_agency = doc.add_paragraph()
     p_agency.alignment = 1
-    agency_run = p_agency.add_run(f"Agency: {customer_info.get('agency_name')}\nDate: {report_date}")
+    agency_run = p_agency.add_run(
+        f"Agency: {customer_info.get('agency_name')}\n"
+        f"Survey Date: {report_date}\n"
+        f"Surveyor: {surveyor}"
+    )
     agency_run.font.size = Pt(14)
     agency_run.font.color.rgb = RGBColor(100, 100, 100)
     
@@ -914,6 +1136,7 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
 
     _progress("Initializing report document...")
     doc = Document()
+    _add_report_footer(doc)
     style = doc.styles["Normal"]
     font = style.font
     font.name = "Calibri"
@@ -924,19 +1147,42 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     agency = ""
-    survey_date = ""
-    surveyor = ""
     if candidate_sites:
         agency = candidate_sites[0].identity.agency_name
-        survey_date = candidate_sites[0].identity.survey_date or ""
-        surveyor = candidate_sites[0].identity.surveyor or ""
+    survey_date = _extract_survey_date(candidate_sites=candidate_sites, customer_info=customer_info)
+    surveyor = candidate_sites[0].identity.surveyor if candidate_sites else ""
     if customer_info:
         agency = customer_info.get("agency_name", agency)
+        if survey_date:
+            customer_info["survey_date"] = survey_date
+            customer_info["report_date"] = _format_report_date(survey_date)
+        surveyor = customer_info.get("surveyor", surveyor)
+
+    _progress("Generating site map visualization...")
+    doc.add_paragraph().add_run("Site Detail & Map Visualisation").bold = True
+    map_image_path = os.path.join(os.path.dirname(output_filepath), "dfr_site_map.png")
+    draw_styled_map(_survey_site_records(candidate_sites=candidate_sites), map_image_path)
+    if os.path.exists(map_image_path):
+        doc.add_picture(map_image_path, width=Inches(6.0))
+        doc.add_paragraph()
 
     doc.add_paragraph(f"Agency: {agency}")
-    doc.add_paragraph(f"Survey Date: {survey_date}")
+    doc.add_paragraph(f"Survey Date: {_format_report_date(survey_date)}")
     doc.add_paragraph(f"Surveyor: {surveyor}")
     doc.add_paragraph(f"Candidate Sites Found: {len(candidate_sites)}")
+
+    contact_data = [
+        ("Agency Name & Address", f"{customer_info.get('agency_name')}\n{customer_info.get('agency_address')}") if customer_info else ("Agency Name & Address", ""),
+        ("Point of Contact (POC)", f"{customer_info.get('poc_name')} | {customer_info.get('poc_email')} | {customer_info.get('poc_phone')}") if customer_info else ("Point of Contact (POC)", ""),
+        ("RTCC/RTIC", f"{customer_info.get('rtcc_name', 'DNA')} | {customer_info.get('rtcc_email', '')}".rstrip(" |")) if customer_info else ("RTCC/RTIC", "DNA"),
+        ("Information Technology (IT)", f"{customer_info.get('it_director')} | {customer_info.get('it_email')}") if customer_info else ("Information Technology (IT)", ""),
+        ("Facilities Engineer", f"{customer_info.get('facilities_engineer')} | {customer_info.get('facilities_email')}") if customer_info else ("Facilities Engineer", ""),
+        ("Radio Shop Engineer", f"{customer_info.get('radio_shop_name', 'DNA')} | {customer_info.get('radio_shop_email', '')}".rstrip(" |")) if customer_info else ("Radio Shop Engineer", "DNA"),
+        ("Crane Contractor", customer_info.get("crane_contractor", "DNA")) if customer_info else ("Crane Contractor", "DNA"),
+        ("Tower Climber Contractor", customer_info.get("tower_climber_contractor", "DNA")) if customer_info else ("Tower Climber Contractor", "DNA"),
+        ("BRINC Project Manager", customer_info.get("brinc_pm", "")) if customer_info else ("BRINC Project Manager", ""),
+    ]
+    add_styled_table(doc, contact_data, ["CONTACT INFORMATION", "NOTES / VALUE"])
     doc.add_page_break()
 
     # ── 2. Candidate Site Sections ──

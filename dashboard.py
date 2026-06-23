@@ -152,6 +152,58 @@ def _resolve_app_path(path):
     return os.path.abspath(os.path.join(APP_DIR, cleaned_path))
 
 
+def _safe_filename_part(text):
+    """Return a filename-safe text fragment while preserving readable spacing."""
+    cleaned = re.sub(r'[\\/:*?"<>|]', "_", str(text).strip())
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip(" ._")
+
+
+def _default_master_document_name():
+    """Build the default report filename from the agency name and survey date."""
+    agency = st.session_state.customer_info.get("agency_name", "").strip()
+    survey_date = ""
+    if st.session_state.candidate_sites:
+        survey_date = st.session_state.candidate_sites[0].identity.survey_date or ""
+    if not survey_date and st.session_state.processed_sites:
+        survey_date = st.session_state.processed_sites[0].get("survey_date", "") or ""
+    if not survey_date:
+        survey_date = datetime.date.today().isoformat()
+
+    parts = [part for part in (_safe_filename_part(agency), survey_date) if part]
+    if parts:
+        return f"{' '.join(parts)}.docx"
+    return f"Master DFR Site Survey {survey_date}.docx"
+
+
+def _derive_survey_date_from_sites(site_data_list):
+    """Return the most common EXIF capture date from processed site images."""
+    date_counts = {}
+    for site in site_data_list or []:
+        for img in site.get("images", []):
+            capture_time = img.get("time")
+            if isinstance(capture_time, datetime.datetime):
+                date_str = capture_time.date().isoformat()
+            elif isinstance(capture_time, datetime.date):
+                date_str = capture_time.isoformat()
+            elif capture_time:
+                date_str = ""
+                for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                    try:
+                        date_str = datetime.datetime.strptime(str(capture_time), fmt).date().isoformat()
+                        break
+                    except ValueError:
+                        continue
+            else:
+                date_str = ""
+            if date_str:
+                date_counts[date_str] = date_counts.get(date_str, 0) + 1
+
+    if not date_counts:
+        return ""
+    return sorted(date_counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+
+
 def _extract_town_state_from_address(address):
     """Infer town and state from a reverse-geocoded address string."""
     parts = [part.strip() for part in str(address).split(",") if part.strip()]
@@ -564,6 +616,9 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
 
                 st.session_state.processed_sites = site_data
 
+                survey_date = _derive_survey_date_from_sites(site_data)
+                surveyor = google_oauth.get_user_email() or st.session_state.customer_info.get("surveyor", "")
+
                 # Auto-populate customer info from metadata
                 if site_data:
                     first_site = site_data[0]
@@ -581,6 +636,9 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                         "it_email": existing.get("it_email", ""),
                         "facilities_engineer": existing.get("facilities_engineer", ""),
                         "facilities_email": existing.get("facilities_email", ""),
+                        "survey_date": survey_date,
+                        "report_date": datetime.datetime.strptime(survey_date, "%Y-%m-%d").strftime("%B %d, %Y") if survey_date else existing.get("report_date", ""),
+                        "surveyor": surveyor,
                     }
                     # Sync widget keys so text_inputs pick up the new name on rerun
                     st.session_state["_widget_agency_name"] = agency_name
@@ -608,7 +666,9 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                         clusters = cluster_images_dbscan(all_images)
                         clusters = split_clusters_by_time_gap(clusters)
                         st.session_state.candidate_sites = cluster_to_candidate_sites(
-                            clusters, agency_name=st.session_state.customer_info.get("agency_name", "")
+                            clusters,
+                            agency_name=st.session_state.customer_info.get("agency_name", ""),
+                            survey_date=survey_date or None,
                         )
                     else:
                         st.session_state.candidate_sites = [
@@ -1568,7 +1628,7 @@ with tab1:
 
             # Report generation & Drive upload — single combined action
             st.subheader("Report Generation & Upload")
-            report_name = st.text_input("Master Document Name", value="Master_DFR_Site_Survey_Report.docx")
+            report_name = st.text_input("Master Document Name", value=_default_master_document_name())
             use_new_report = st.checkbox(
                 "Use enhanced multi-site report format",
                 value=True,
@@ -1577,6 +1637,14 @@ with tab1:
             if st.button("📄 Build Report & Upload to Drive", use_container_width=True):
                 with st.status("Building report & uploading...", expanded=True) as report_status:
                     try:
+                        survey_date = _derive_survey_date_from_sites(st.session_state.processed_sites)
+                        surveyor = google_oauth.get_user_email() or st.session_state.customer_info.get("surveyor", "")
+                        if survey_date:
+                            st.session_state.customer_info["survey_date"] = survey_date
+                            st.session_state.customer_info["report_date"] = datetime.datetime.strptime(survey_date, "%Y-%m-%d").strftime("%B %d, %Y")
+                        if surveyor:
+                            st.session_state.customer_info["surveyor"] = surveyor
+
                         # Update metadata save
                         report_status.write("💾 Saving session metadata...")
                         _save_session_metadata(st.session_state.processed_sites)
@@ -1632,14 +1700,13 @@ with tab1:
                         def _report_progress(step):
                             report_status.write(f"📝 {step}")
 
+                        report_sites = st.session_state.candidate_sites if use_new_report and st.session_state.candidate_sites else st.session_state.processed_sites
                         if use_new_report and st.session_state.candidate_sites:
                             from reporter import generate_candidate_site_report
                             generate_candidate_site_report(
                                 st.session_state.candidate_sites,
                                 report_path,
                                 customer_info=st.session_state.customer_info,
-                                drive_manager=report_drive,
-                                drive_reports_folder_id=st.session_state.get('reports_folder_id'),
                                 progress_callback=_report_progress,
                             )
                         else:
@@ -1647,11 +1714,32 @@ with tab1:
                                 st.session_state.processed_sites,
                                 report_path,
                                 customer_info=st.session_state.customer_info,
-                                drive_manager=report_drive,
-                                drive_reports_folder_id=st.session_state.get('reports_folder_id'),
                                 progress_callback=_report_progress,
                             )
                         st.session_state.generated_report = report_path
+
+                        kmz_path = os.path.splitext(report_path)[0] + ".kmz"
+                        reporter.export_sites_kmz(
+                            report_sites,
+                            kmz_path,
+                            candidate_sites=st.session_state.candidate_sites if st.session_state.candidate_sites else None,
+                        )
+
+                        if report_drive and st.session_state.get("reports_folder_id"):
+                            report_status.write("☁️ Uploading report to Google Drive...")
+                            report_drive.upload_file(
+                                report_path,
+                                st.session_state.reports_folder_id,
+                                file_name=os.path.basename(report_path),
+                            )
+                            try:
+                                report_drive.upload_file(
+                                    kmz_path,
+                                    st.session_state.reports_folder_id,
+                                    file_name=os.path.basename(kmz_path),
+                                )
+                            except Exception:
+                                pass
 
                         # Upload exports to Drive if authenticated
                         if st.session_state.candidate_sites and report_drive and st.session_state.get("metadata_folder_id"):
@@ -1705,6 +1793,13 @@ with tab1:
                                 os.path.basename(report_path),
                                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                                 key="docx_save_persist")
+                        kmz_path = os.path.splitext(report_path)[0] + ".kmz"
+                        if os.path.exists(kmz_path):
+                            with open(kmz_path, "rb") as kf:
+                                st.download_button("📥 Download KMZ", kf.read(),
+                                    os.path.basename(kmz_path),
+                                    mime="application/vnd.google-earth.kmz",
+                                    key="kmz_save_persist")
         else:
             st.info("No sites loaded. Run the ingestion step first.")
 
