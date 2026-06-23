@@ -7,7 +7,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 try:
-    import google.generativeai as genai
+    from google import genai
 except ImportError:
     genai = None
 
@@ -191,19 +191,21 @@ def estimate_building_height_gemini(image_path, api_key=None):
                 pass
 
     try:
-        genai.configure(api_key=api_key or "")
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        client = genai.Client(api_key=api_key or "")
         try:
             import PIL.Image
             image_input = PIL.Image.open(image_path)
         except Exception:
             image_input = image_path
-        response = model.generate_content([
-            image_input,
-            "How many floors does this building have? Estimate the building "
-            "height in feet. Return ONLY valid JSON: "
-            '{"floors": <int>, "estimated_height_ft": <int>}',
-        ])
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[
+                image_input,
+                "How many floors does this building have? Estimate the building "
+                "height in feet. Return ONLY valid JSON: "
+                '{"floors": <int>, "estimated_height_ft": <int>}',
+            ],
+        )
         text = response.text.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()

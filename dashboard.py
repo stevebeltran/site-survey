@@ -30,7 +30,7 @@ import processor
 import analyzer
 import reporter
 from site_model import CandidateSite, export_sites_json, export_sites_csv
-from processor import cluster_images_dbscan, split_clusters_by_time_gap, cluster_to_candidate_sites
+from processor import cluster_images_dbscan, split_clusters_by_time_gap, cluster_to_candidate_sites, MIN_SITE_PHOTOS
 from analyzer import enrich_gis
 
 # Import the image coordinates package
@@ -196,10 +196,13 @@ def _get_displayable_image_path(image_path, site_folder=None):
             temp-dir path from a previous session), the function will look for the
             file by its basename inside site_folder before giving up.
     """
+    if image_path:
+        image_path = _resolve_app_path(image_path)
+
     # If the stored path doesn't exist, try resolving by filename inside site_folder
     if (not image_path or not os.path.exists(image_path)) and site_folder:
         if image_path:
-            candidate = os.path.join(site_folder, os.path.basename(image_path))
+            candidate = _resolve_app_path(os.path.join(site_folder, os.path.basename(image_path)))
             if os.path.exists(candidate):
                 image_path = candidate
     if not image_path or not os.path.exists(image_path):
@@ -610,6 +613,7 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                     else:
                         st.session_state.candidate_sites = [
                             CandidateSite.from_site_dict(s) for s in site_data
+                            if len(s.get("images", [])) >= MIN_SITE_PHOTOS
                         ]
 
                     total_cs = len(st.session_state.candidate_sites)

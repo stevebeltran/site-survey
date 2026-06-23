@@ -267,8 +267,13 @@ def split_clusters_by_time_gap(clusters, gap_minutes=10):
     return result
 
 
+MIN_SITE_PHOTOS = 5  # Clusters with fewer photos are random, not real sites
+
+
 def cluster_to_candidate_sites(clusters, agency_name="", survey_date=None):
     """Convert cluster output into a list of CandidateSite objects.
+
+    Clusters with fewer than MIN_SITE_PHOTOS images are dropped.
 
     Args:
         clusters: list of lists of image meta dicts.
@@ -284,7 +289,7 @@ def cluster_to_candidate_sites(clusters, agency_name="", survey_date=None):
 
     sites = []
     for idx, cluster in enumerate(clusters, start=1):
-        if not cluster:
+        if not cluster or len(cluster) < MIN_SITE_PHOTOS:
             continue
 
         lats = [m["lat"] for m in cluster if m.get("lat") is not None]
@@ -610,7 +615,8 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
     _report_progress(65, "Clustering GPS-tagged images...")
     clusters = cluster_images_dbscan(images_meta, eps_meters=radius_meters)
     clusters = split_clusters_by_time_gap(clusters)
-    
+    clusters = [c for c in clusters if len(c) >= MIN_SITE_PHOTOS]
+
     site_data = []
     batch_folder_name = _derive_department_folder_name(
         full_address=reverse_geocode(clusters[0][0]["lat"], clusters[0][0]["lon"]) if clusters else None,

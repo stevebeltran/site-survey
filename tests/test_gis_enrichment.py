@@ -61,16 +61,16 @@ class TestEnrichGISElevation:
 class TestGeminiBuildingHeight:
     @patch("analyzer.genai")
     def test_returns_height_from_gemini(self, mock_genai):
-        mock_model = MagicMock()
         mock_response = MagicMock()
         mock_response.text = '{"floors": 3, "estimated_height_ft": 39}'
-        mock_model.generate_content.return_value = mock_response
-        mock_genai.GenerativeModel.return_value = mock_model
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = mock_response
+        mock_genai.Client.return_value = mock_client
         result = estimate_building_height_gemini("/path/to/building.jpg")
         assert result == {"floors": 3, "estimated_height_ft": 39}
 
     @patch("analyzer.genai")
     def test_returns_none_on_failure(self, mock_genai):
-        mock_genai.GenerativeModel.side_effect = Exception("API error")
+        mock_genai.Client.side_effect = Exception("API error")
         result = estimate_building_height_gemini("/path/to/building.jpg")
         assert result is None
