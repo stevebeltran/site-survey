@@ -1309,9 +1309,7 @@ with tab1:
             # Show detailed card for selected site
             def _site_label(idx):
                 s = st.session_state.processed_sites[idx]
-                _p = [p.strip() for p in s['address'].split(',')]
-                _a = ', '.join(_p[:2]) if len(_p) >= 2 else s['address']
-                return f"{s['site_id']}: {_a}"
+                return f"{s['site_id']}: {reporter._format_short_address(s['address'])}"
             selected_site_idx = st.selectbox("Select Site to Inspect", range(len(st.session_state.processed_sites)), format_func=_site_label)
             selected_site = st.session_state.processed_sites[selected_site_idx]
 
@@ -1337,8 +1335,9 @@ with tab1:
 
                 st.session_state.customer_info["agency_name"] = agency_name
 
-            st.markdown(f"### {selected_site['address']}")
-            st.write(f"📁 **Local Folder:** `{selected_site['folder_path']}`")
+            st.markdown(f"### {reporter._format_short_address(selected_site['address'])}")
+            st.write(f"📁 **Local Folder:** `{os.path.basename(selected_site['folder_path'])}`")
+            st.caption(selected_site['folder_path'])
             
             col_a, col_b = st.columns(2)
             with col_a:
@@ -1703,8 +1702,6 @@ with tab1:
 
                             raw_fid = report_drive.get_or_create_folder(client_fid, "01_Raw_Images")
                             proc_fid = report_drive.get_or_create_folder(client_fid, "02_Processed_Sites")
-                            rep_fid = report_drive.get_or_create_folder(client_fid, "03_Reports")
-                            meta_fid = report_drive.get_or_create_folder(client_fid, "04_Metadata")
 
                             raw_image_folder_ids = {}
                             for site in st.session_state.processed_sites:
@@ -1730,8 +1727,8 @@ with tab1:
                             st.session_state.client_folder_id = client_fid
                             st.session_state.raw_images_folder_id = raw_fid
                             st.session_state.processed_folder_id = proc_fid
-                            st.session_state.reports_folder_id = rep_fid
-                            st.session_state.metadata_folder_id = meta_fid
+                            st.session_state.reports_folder_id = client_fid
+                            st.session_state.metadata_folder_id = client_fid
                             st.session_state.client_name = agency
                             st.session_state.drive_folder_url = f"https://drive.google.com/drive/folders/{client_fid}"
                             report_status.write(f"✅ Uploaded {total_upload} images to Drive")

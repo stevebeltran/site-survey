@@ -653,11 +653,8 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
         
         # Name the cluster based on geocoding
         full_address = reverse_geocode(center_lat, center_lon)
-        # Create a shorter, filesystem-friendly folder name
-        parts = [p.strip() for p in full_address.split(',')]
-        short_name = f"Site_{idx+1}_" + "_".join(parts[:2]).replace(" ", "_").replace("/", "-")
-        # Keep alphanumeric, underscores, hyphens
-        short_name = "".join(c for c in short_name if c.isalnum() or c in ('_', '-'))
+        # Create a shorter, filesystem-friendly folder name from the short address
+        short_name = _drive_site_folder_name(full_address, f"SITE_{idx+1:03d}")
         
         site_folder = os.path.join(batch_folder, short_name)
         if not os.path.exists(site_folder):
