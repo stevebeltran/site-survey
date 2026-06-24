@@ -832,7 +832,6 @@ st.markdown(
         <div class="mission-chip"><span class="label">Mission</span><span>{_overview["agency"]}</span></div>
         <div class="mission-chip"><span class="label">Sites</span><span>{_overview["sites"]}</span></div>
         <div class="mission-chip"><span class="label">Files</span><span>{_overview["files"]}</span></div>
-        <div class="mission-chip"><span class="label">Last Sync</span><span>{_overview["last_sync"]}</span></div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -1020,11 +1019,18 @@ def _render_survey_upload_block(current_proximity_radius: int, compact: bool = F
 
     return uploaded_files, client_name, proximity_radius
 
-uploaded_files = None
+uploaded_files = st.session_state.get("survey_photo_upload")
 client_name = "Untitled_Site_Survey"
 
-if not st.session_state.get("survey_photo_upload"):
-    uploaded_files, client_name, proximity_radius = _render_survey_upload_block(proximity_radius, compact=False)
+# Always render upload block to show widget and get proximity_radius
+# (compact mode when files already exist)
+compact_mode = uploaded_files is not None
+upload_complete = st.session_state.get("_upload_processing_complete", False)
+uploaded_files, client_name, proximity_radius = _render_survey_upload_block(
+    proximity_radius,
+    compact=compact_mode,
+    upload_complete=upload_complete
+)
 
 # Start ingestion immediately so the app does not render the rest of the
 # dashboard in a stale pre-processing state.
@@ -2108,12 +2114,6 @@ with tab1:
     col1, col2 = st.columns([1, 2])
     
     with col1:
-        if st.session_state.get("survey_photo_upload"):
-            uploaded_files, client_name, proximity_radius = _render_survey_upload_block(
-                proximity_radius,
-                compact=True,
-                upload_complete=st.session_state.get("_upload_processing_complete", False),
-            )
         if st.session_state.processed_sites:
             st.subheader("Sites Detected")
             for site in st.session_state.processed_sites:
@@ -2130,66 +2130,9 @@ with tab1:
                 st.markdown(f"[📂 Open in Google Drive]({st.session_state.drive_folder_url})")
 
     with col2:
-        st.subheader("Site Detail & Map Visualisation")
+        st.subheader("Site Detail & Analysis")
         if st.session_state.processed_sites:
-            # Build Folium map with site markers, 2-mile radius rings, and city boundary
-            sites = st.session_state.processed_sites
-            center_lat = sum(s['latitude'] for s in sites) / len(sites)
-            center_lon = sum(s['longitude'] for s in sites) / len(sites)
-
-            m = folium.Map(location=[center_lat, center_lon], zoom_start=13,
-                           tiles="CartoDB positron")
-
-            # City boundary overlay
-            if "city_boundary_geojson" not in st.session_state:
-                detected = st.session_state.get("gps_detected_agency", {})
-                city = detected.get("city", "")
-                state = detected.get("state", "")
-                geojson = reporter.query_city_boundary(city, state) if city else None
-                st.session_state.city_boundary_geojson = geojson
-
-            boundary = st.session_state.city_boundary_geojson
-            if boundary:
-                folium.GeoJson(
-                    boundary,
-                    name="City Boundary",
-                    style_function=lambda _: {
-                        "fillColor": "#3b82f6",
-                        "color": "#1e40af",
-                        "weight": 2.5,
-                        "dashArray": "6 4",
-                        "fillOpacity": 0.06,
-                    },
-                ).add_to(m)
-
-            TWO_MILES_M = 3218.69  # 2 miles in meters
-
-            for site in sites:
-                lat, lon = site['latitude'], site['longitude']
-                _parts = [p.strip() for p in site['address'].split(',')]
-                label = ', '.join(_parts[:2]) if len(_parts) >= 2 else site['address']
-
-                # 2-mile radius ring
-                folium.Circle(
-                    location=[lat, lon],
-                    radius=TWO_MILES_M,
-                    color="#ef4444",
-                    weight=1.5,
-                    fill=True,
-                    fill_color="#ef4444",
-                    fill_opacity=0.06,
-                    tooltip=f"2-mile radius — {label}",
-                ).add_to(m)
-
-                # Site marker
-                folium.Marker(
-                    location=[lat, lon],
-                    tooltip=label,
-                    popup=f"<b>{site['site_id']}</b><br>{label}<br>Airspace: {site.get('airspace', 'N/A')}",
-                    icon=folium.Icon(color="red", icon="tower-broadcast", prefix="fa"),
-                ).add_to(m)
-
-            st_folium(m, width=None, height=450, returned_objects=[])
+            st.info("Map displayed in Mission Workspace above. Select a site below for detailed inspection.")
             
             # Show detailed card for selected site
             def _site_label(idx):

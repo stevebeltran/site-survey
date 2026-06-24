@@ -1122,4 +1122,113 @@ def search_calendar_for_events(agency_name, city=None):
 
     return result
 
-    return result
+
+# ---------------------------------------------------------------------------
+# Department Contact Extraction from Gmail
+# ---------------------------------------------------------------------------
+
+def extract_department_contacts(domain: str) -> list:
+    """Extract unique contacts from emails originating from a specific domain.
+
+    Searches Gmail for all emails from the specified domain (e.g., "memphispd.gov")
+    and extracts sender contact information (name, email, title, phone) from the
+    From headers. Deduplicates by email address.
+
+    Args:
+        domain: Email domain to search for, e.g., "memphispd.gov"
+
+    Returns:
+        List of contact dicts with keys:
+            - name: Display name extracted from From header (or empty string)
+            - email: Email address
+            - title: Empty string (not extracted from domain emails)
+            - phone: Empty string (not extracted from domain emails)
+
+        Returns empty list on auth errors or if no emails found.
+
+    Example:
+        >>> contacts = extract_department_contacts("memphispd.gov")
+        >>> len(contacts) > 0
+        True
+        >>> contacts[0]["email"]
+        'officer@memphispd.gov'
+    """
+    try:
+        gmail = _get_gmail_service()
+        if not gmail:
+            print(f"Gmail service unavailable for extract_department_contacts({domain})")
+            return []
+    except Exception as e:
+        print(f"Error initializing Gmail service for domain {domain}: {e}")
+        return []
+
+    try:
+        # Search for emails from the specified domain
+        query = f"from:{domain}"
+        resp = gmail.users().messages().list(
+            userId="me",
+            q=query,
+            maxResults=50,
+        ).execute()
+
+        messages = resp.get("messages", [])
+        if not messages:
+            return []
+
+        seen_emails = {}  # email_lower -> contact_dict
+
+        for msg_stub in messages:
+            try:
+                # Fetch the message metadata to get From header
+                msg = gmail.users().messages().get(
+                    userId="me",
+                    id=msg_stub["id"],
+                    format="metadata",
+                    metadataHeaders=["From"],
+                ).execute()
+
+                headers = msg.get("payload", {}).get("headers", [])
+                for header in headers:
+                    if header.get("name", "").lower() == "from":
+                        from_value = header.get("value", "")
+                        # Parse "Name <email@domain>" format
+                        display_name, email = parseaddr(from_value)
+                        if not email:
+                            continue
+
+                        email_lower = email.lower()
+
+                        # Skip if already seen
+                        if email_lower in seen_emails:
+                            continue
+
+                        # Skip if from internal domain (brincdrones.com)
+                        if "brincdrones.com" in email_lower:
+                            continue
+
+                        # Skip blocked emails
+                        if _is_blocked_email(email):
+                            continue
+
+                        # Add to seen_emails
+                        seen_emails[email_lower] = {
+                            "name": display_name or "",
+                            "email": email,
+                            "title": "",
+                            "phone": "",
+                        }
+                        break  # Only process first From header per message
+
+            except Exception as e:
+                print(f"Error processing message {msg_stub.get('id')}: {e}")
+                continue
+
+        return list(seen_emails.values())
+
+    except Exception as e:
+        err_str = str(e)
+        if "403" in err_str or "401" in err_str or "delegation" in err_str.lower():
+            print(f"Gmail authentication error for domain {domain}: {e}")
+        else:
+            print(f"Error extracting contacts from domain {domain}: {e}")
+        return []
