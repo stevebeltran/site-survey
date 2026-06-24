@@ -948,15 +948,17 @@ def _on_files_changed():
     """Reset GPS detection and processing flag when the user changes files."""
     st.session_state.pop("gps_detected_agency", None)
     st.session_state.pop("_auto_processed", None)
+    st.session_state.pop("_upload_processing_complete", None)
     st.session_state.pop("city_boundary_geojson", None)
     st.session_state.pop("candidate_sites", None)
 
-def _render_survey_upload_block(current_proximity_radius: int, compact: bool = False):
+def _render_survey_upload_block(current_proximity_radius: int, compact: bool = False, upload_complete: bool = False):
     """Render the survey upload controls in either full or compact form."""
-    container = st.expander("Upload Survey Photos", expanded=False) if compact else st.container(border=True)
+    expander_label = "Upload Survey Photos (Complete)" if compact and upload_complete else "Upload Survey Photos"
+    container = st.expander(expander_label, expanded=False) if compact else st.container(border=True)
     with container:
         if compact:
-            st.caption("Collapsed intake panel")
+            st.caption("Uploads finished. Expand to add more photos." if upload_complete else "Collapsed intake panel")
         else:
             st.subheader("Upload Survey Photos")
             st.caption("Drag raw survey photos to start GPS detection, EXIF clustering, and site ingestion.")
@@ -1305,9 +1307,11 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                         enrich_gis(cs, progress_callback=_gis_progress)
 
                 status.update(label="Processing complete!", state="complete", expanded=False)
+                st.session_state["_upload_processing_complete"] = True
                 st.rerun()
             except Exception as e:
                 status.update(label="Processing failed", state="error")
+                st.session_state["_upload_processing_complete"] = True
                 st.error(f"Processing failed: {e}")
 
 def _render_site_checklist(site, site_idx):
@@ -1965,7 +1969,11 @@ with tab1:
     
     with col1:
         if st.session_state.get("survey_photo_upload"):
-            uploaded_files, client_name, proximity_radius = _render_survey_upload_block(proximity_radius, compact=True)
+            uploaded_files, client_name, proximity_radius = _render_survey_upload_block(
+                proximity_radius,
+                compact=True,
+                upload_complete=st.session_state.get("_upload_processing_complete", False),
+            )
         if st.session_state.processed_sites:
             st.subheader("Sites Detected")
             for site in st.session_state.processed_sites:
