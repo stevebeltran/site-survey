@@ -1026,6 +1026,146 @@ client_name = "Untitled_Site_Survey"
 if not st.session_state.get("survey_photo_upload"):
     uploaded_files, client_name, proximity_radius = _render_survey_upload_block(proximity_radius, compact=False)
 
+# Start ingestion immediately so the app does not render the rest of the
+# dashboard in a stale pre-processing state.
+if uploaded_files and not st.session_state.get("_auto_processed"):
+    st.session_state._auto_processed = True
+
+    with st.container(border=True):
+        st.subheader("Processing Status")
+        with st.status("Processing survey photos...", expanded=True) as status:
+            _step_placeholder = status.empty()
+            _detail_placeholder = status.empty()
+
+            def _update_processing_progress(percent, message):
+                status.update(label=f"Processing - {int(percent)}%")
+                _detail_placeholder.write(f"⏳ {message}")
+
+            try:
+                st.session_state.processed_sites = []
+                st.session_state.active_bg_image = None
+                st.session_state.last_click = {}
+
+                _step_placeholder.write(f"📂 Saving {len(uploaded_files)} uploaded file(s) to disk...")
+                temp_dir = tempfile.mkdtemp(prefix="dfr_ingest_")
+                image_paths_for_processing = []
+                for uploaded_file in uploaded_files:
+                    temp_path = os.path.join(temp_dir, uploaded_file.name)
+                    with open(temp_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    image_paths_for_processing.append(temp_path)
+                st.session_state.image_paths = image_paths_for_processing
+
+                proc_drive = None
+                try:
+                    proc_drive = get_drive_manager()
+                except Exception:
+                    pass
+
+                _step_placeholder.write("🔍 Extracting EXIF metadata and clustering by GPS...")
+                site_data = processor.process_and_organize_images(
+                    source_dir=temp_dir,
+                    output_dir=output_dir,
+                    radius_meters=proximity_radius,
+                    progress_callback=_update_processing_progress,
+                    image_paths=image_paths_for_processing,
+                    drive_manager=proc_drive,
+                    drive_output_folder_id=st.session_state.get('processed_folder_id'),
+                    agency_name=st.session_state.customer_info.get("agency_name"),
+                )
+
+                if not site_data:
+                    st.warning("No images with GPS metadata were found in the uploaded files.")
+
+                _step_placeholder.write(f"🏗️ Analyzing infrastructure for {len(site_data)} site(s)...")
+                for i, site in enumerate(site_data):
+                    status.update(label=f"Analyzing site {i+1}/{len(site_data)}")
+                    _step_placeholder.write(f"🔎 Site {i+1}: Running infrastructure detection...")
+                    site["analysis"] = analyzer.analyze_site(site)
+                    _step_placeholder.write(f"✈️ Site {i+1}: Querying airspace & airfield data...")
+                    airfield = reporter.query_nearest_airfield(site['latitude'], site['longitude'])
+                    site["airfield_info"] = f"{airfield[0]} ({airfield[1]:.2f} miles)" if airfield else "Lookup failed"
+                    airspace = reporter.query_airspace_class(site["latitude"], site["longitude"])
+                    site["airspace"] = airspace if airspace else "Lookup failed"
+                    for img in site.get("images", []):
+                        if "selected_for_report" not in img:
+                            img["selected_for_report"] = True
+
+                st.session_state.processed_sites = site_data
+
+                survey_date = _derive_survey_date_from_sites(site_data)
+                surveyor = google_oauth.get_user_email() or st.session_state.customer_info.get("surveyor", "")
+
+                if site_data:
+                    first_site = site_data[0]
+                    first_address = first_site.get("address", "")
+                    agency_name = first_site.get("agency_name") or f"{_extract_town_state_from_address(first_address)[0]} Police Department"
+
+                    existing = st.session_state.customer_info
+                    st.session_state.customer_info = {
+                        "agency_name": agency_name,
+                        "agency_address": reporter._format_short_address(first_address),
+                        "poc_name": existing.get("poc_name", ""),
+                        "poc_email": existing.get("poc_email", ""),
+                        "poc_phone": existing.get("poc_phone", ""),
+                        "it_director": existing.get("it_director", ""),
+                        "it_email": existing.get("it_email", ""),
+                        "facilities_engineer": existing.get("facilities_engineer", ""),
+                        "facilities_email": existing.get("facilities_email", ""),
+                        "rtcc_name": existing.get("rtcc_name", ""),
+                        "rtcc_email": existing.get("rtcc_email", ""),
+                        "radio_shop_name": existing.get("radio_shop_name", ""),
+                        "radio_shop_email": existing.get("radio_shop_email", ""),
+                        "crane_contractor": existing.get("crane_contractor", ""),
+                        "tower_climber_contractor": existing.get("tower_climber_contractor", ""),
+                        "brinc_pm": existing.get("brinc_pm", ""),
+                        "contacts": existing.get("contacts", []),
+                        "survey_delivery_target": existing.get("survey_delivery_target", ""),
+                        "power_circuit_requirements": existing.get("power_circuit_requirements", ""),
+                        "internet_ethernet_access": existing.get("internet_ethernet_access", ""),
+                        "follow_up_requirements": existing.get("follow_up_requirements", ""),
+                        "action_items": existing.get("action_items", ""),
+                        "survey_date": survey_date,
+                        "report_date": datetime.datetime.strptime(survey_date, "%Y-%m-%d").strftime("%B %d, %Y") if survey_date else existing.get("report_date", ""),
+                        "surveyor": surveyor,
+                    }
+                    st.session_state["_pending_agency_widget_sync"] = {
+                        "agency_name": agency_name,
+                        "agency_address": st.session_state.customer_info["agency_address"],
+                    }
+                    city = processor.extract_city_from_address(first_address) if first_address else ""
+                    st.session_state.gps_detected_agency = {
+                        **st.session_state.get("gps_detected_agency", {}),
+                        "agency_name": agency_name,
+                        "city": city,
+                    }
+                    _save_session_metadata(site_data)
+
+                st.session_state.candidate_sites = []
+                if site_data:
+                    status.update(label="Building candidate sites...")
+                    st.session_state.candidate_sites = [
+                        CandidateSite.from_site_dict(s) for s in site_data
+                        if len(s.get("images", [])) >= MIN_SITE_PHOTOS
+                    ]
+
+                    total_cs = len(st.session_state.candidate_sites)
+                    for cs_idx, cs in enumerate(st.session_state.candidate_sites, start=1):
+                        status.update(label=f"Enriching site {cs_idx}/{total_cs} with GIS data...")
+
+                        def _gis_progress(step, _idx=cs_idx, _total=total_cs):
+                            _step_placeholder.write(f"🌐 Site {_idx}/{_total}: {step}")
+
+                        enrich_gis(cs, progress_callback=_gis_progress)
+
+                status.update(label="Processing complete!", state="complete", expanded=False)
+                st.session_state["_upload_processing_complete"] = True
+                st.rerun()
+            except Exception as e:
+                status.update(label="Processing failed", state="error")
+                st.session_state["_upload_processing_complete"] = True
+                st.error(f"Processing failed: {e}")
+
 # Mission workspace
 _overview = _mission_overview()
 _render_kpi_cards()
