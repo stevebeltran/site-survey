@@ -1124,6 +1124,146 @@ def search_calendar_for_events(agency_name, city=None):
 
 
 # ---------------------------------------------------------------------------
+# Department Calendar Events Search
+# ---------------------------------------------------------------------------
+
+def search_department_calendar_events(dept_name: str, dept_domain: str) -> list:
+    """Search Google Calendar for events matching department name and attendees.
+
+    Finds events where BOTH conditions are true:
+    1. Department/location name in event title or description (fuzzy match ≥80% similarity)
+    2. At least one attendee from the department domain
+
+    Args:
+        dept_name: Department name, e.g., "West Memphis Police"
+        dept_domain: Department domain, e.g., "memphispd.gov"
+
+    Returns:
+        List of event dicts with keys:
+            - name: Event title
+            - date: Formatted as "Mon DD, YYYY" (e.g., "Jun 20, 2026")
+            - time: Formatted as "HH:MM AM/PM" (e.g., "2:34 PM") or "All day"
+            - attendee_count: Number of accepted/pending attendees (excluded declined)
+            - url: Event URL (htmlLink)
+
+        Returns empty list on auth errors or if no matching events found.
+
+    Example:
+        >>> events = search_department_calendar_events("West Memphis Police", "memphispd.gov")
+        >>> len(events) > 0
+        True
+        >>> events[0]["name"]
+        'West Memphis Police Deployment Meeting'
+    """
+    from datetime import datetime
+    from fuzzywuzzy import fuzz
+
+    result = []
+
+    try:
+        calendar = _get_calendar_service()
+        if not calendar:
+            print(f"Calendar service unavailable for search_department_calendar_events")
+            return []
+    except Exception as e:
+        print(f"Error initializing Calendar service: {e}")
+        return []
+
+    try:
+        # Search using dept_name as query term
+        events_resp = calendar.events().list(
+            calendarId="primary",
+            q=dept_name,
+            maxResults=50,
+            singleEvents=True,
+            orderBy="startTime",
+        ).execute()
+
+        events = events_resp.get("items", [])
+        if not events:
+            return []
+
+        for event in events:
+            # Check condition 1: dept_name match in title or description
+            summary = event.get("summary", "").strip()
+            description = event.get("description", "").strip()
+
+            # Use token_set_ratio for flexible matching (ignores word order)
+            title_match = fuzz.token_set_ratio(dept_name.lower(), summary.lower())
+            desc_match = fuzz.token_set_ratio(dept_name.lower(), description.lower())
+            has_name_match = title_match >= 80 or desc_match >= 80
+
+            if not has_name_match:
+                continue
+
+            # Check condition 2: at least one attendee from dept_domain
+            attendees = event.get("attendees", [])
+            has_dept_attendee = any(
+                dept_domain.lower() in attendee.get("email", "").lower()
+                for attendee in attendees
+            )
+
+            if not has_dept_attendee:
+                continue
+
+            # Both conditions met — extract event details
+            # Format date
+            start = event.get("start", {})
+            start_datetime = start.get("dateTime")
+            start_date = start.get("date")
+
+            date_str = ""
+            time_str = "All day"
+
+            if start_datetime:
+                # Parse ISO 8601 datetime
+                try:
+                    dt = datetime.fromisoformat(start_datetime.replace("Z", "+00:00"))
+                    # Format date as "Mon DD, YYYY"
+                    date_str = dt.strftime("%a %d, %Y")
+                    # Format time as "HH:MM AM/PM"
+                    time_str = dt.strftime("%I:%M %p").lstrip("0")
+                except Exception:
+                    date_str = start_datetime[:10] if start_datetime else ""
+                    time_str = "All day"
+            elif start_date:
+                # All-day event
+                try:
+                    d = datetime.strptime(start_date, "%Y-%m-%d")
+                    date_str = d.strftime("%a %d, %Y")
+                    time_str = "All day"
+                except Exception:
+                    date_str = start_date
+                    time_str = "All day"
+
+            # Count attendees: accepted/pending (exclude declined)
+            attendee_count = 0
+            for attendee in attendees:
+                response_status = attendee.get("responseStatus", "needsAction")
+                # Count accepted, tentativelyAccepted, and needsAction
+                # Exclude only explicitly declined and resources
+                if response_status != "declined" and not attendee.get("resource"):
+                    attendee_count += 1
+
+            result.append({
+                "name": summary,
+                "date": date_str,
+                "time": time_str,
+                "attendee_count": attendee_count,
+                "url": event.get("htmlLink", ""),
+            })
+
+    except Exception as e:
+        err_str = str(e)
+        if "403" in err_str or "401" in err_str or "delegation" in err_str.lower():
+            print(f"Calendar authentication error for search_department_calendar_events: {e}")
+        else:
+            print(f"Error searching calendar for department events: {e}")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Department Contact Extraction from Gmail
 # ---------------------------------------------------------------------------
 

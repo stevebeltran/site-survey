@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from matcher import assign_contact_to_role
-from gmail_lookup import extract_department_contacts
+from gmail_lookup import extract_department_contacts, search_department_calendar_events
 
 
 class TestContactToRoleMatching:
@@ -104,6 +104,61 @@ class TestDepartmentContactExtraction:
         for contact in result:
             assert contact.get("title") == ""
             assert contact.get("phone") == ""
+
+
+class TestSearchDepartmentCalendarEvents:
+    """Test suite for search_department_calendar_events function."""
+
+    def test_search_department_calendar_events_returns_list(self):
+        """Test that search_department_calendar_events returns a list of dicts."""
+        result = search_department_calendar_events("West Memphis Police", "memphispd.gov")
+        assert isinstance(result, list)
+
+    def test_search_department_calendar_events_required_keys(self):
+        """Test that returned events have required keys: name, date, time, attendee_count, url."""
+        result = search_department_calendar_events("West Memphis Police", "memphispd.gov")
+        assert isinstance(result, list)
+        # If events returned, each must have required keys
+        for event in result:
+            assert "name" in event
+            assert "date" in event
+            assert "time" in event
+            assert "attendee_count" in event
+            assert "url" in event
+
+    def test_search_department_calendar_events_date_format(self):
+        """Test that returned events have properly formatted dates (Mon DD, YYYY)."""
+        result = search_department_calendar_events("West Memphis Police", "memphispd.gov")
+        assert isinstance(result, list)
+        # Verify date format if events exist
+        import re
+        for event in result:
+            date_str = event.get("date", "")
+            if date_str:
+                # Format: "Mon DD, YYYY" (e.g., "Jun 20, 2026")
+                assert re.match(r'^[A-Z][a-z]{2} \d{2}, \d{4}$', date_str), \
+                    f"Date '{date_str}' does not match expected format 'Mon DD, YYYY'"
+
+    def test_search_department_calendar_events_time_format(self):
+        """Test that returned events have properly formatted times (HH:MM AM/PM or All day)."""
+        result = search_department_calendar_events("West Memphis Police", "memphispd.gov")
+        assert isinstance(result, list)
+        # Verify time format if events exist
+        import re
+        for event in result:
+            time_str = event.get("time", "")
+            # Either "All day" or "H:MM AM/PM" (leading zero removed)
+            assert re.match(r'^(?:All day|\d{1,2}:\d{2}\s(?:AM|PM))$', time_str), \
+                f"Time '{time_str}' does not match expected format"
+
+    def test_search_department_calendar_events_attendee_count_non_negative(self):
+        """Test that attendee_count is a non-negative integer."""
+        result = search_department_calendar_events("West Memphis Police", "memphispd.gov")
+        assert isinstance(result, list)
+        for event in result:
+            count = event.get("attendee_count")
+            assert isinstance(count, int)
+            assert count >= 0
 
 
 class TestSearchDepartmentDocuments:
