@@ -257,3 +257,175 @@ class TestSearchDepartmentDocuments:
         result = manager.search_department_documents("West Memphis Police", "memphispd.gov")
         assert isinstance(result, list)
         assert result == []
+
+
+class TestParallelOrchestrator:
+    """Test suite for fetch_agency_docs_parallel function."""
+
+    @patch('agency_docs.extract_department_contacts')
+    @patch('agency_docs.search_department_calendar_events')
+    @patch('agency_docs.GoogleDriveManager')
+    @patch('agency_docs.google_oauth.get_credentials')
+    def test_fetch_agency_docs_parallel_returns_dict(self, mock_get_creds, mock_drive_manager,
+                                                      mock_calendar, mock_gmail):
+        """Test that fetch_agency_docs_parallel returns a dict with all required keys."""
+        from agency_docs import fetch_agency_docs_parallel
+
+        # Mock all three lookups to return empty results
+        mock_get_creds.return_value = MagicMock()
+        mock_gmail.return_value = []
+        mock_calendar.return_value = []
+
+        mock_manager_instance = MagicMock()
+        mock_manager_instance.search_department_documents.return_value = []
+        mock_drive_manager.return_value = mock_manager_instance
+
+        result = fetch_agency_docs_parallel("West Memphis Police", "memphispd.gov", {})
+
+        # Verify all four keys are present
+        assert isinstance(result, dict)
+        assert "contacts" in result
+        assert "docs" in result
+        assert "events" in result
+        assert "errors" in result
+
+    @patch('agency_docs.extract_department_contacts')
+    @patch('agency_docs.search_department_calendar_events')
+    @patch('agency_docs.GoogleDriveManager')
+    @patch('agency_docs.google_oauth.get_credentials')
+    def test_fetch_agency_docs_parallel_correct_structure(self, mock_get_creds, mock_drive_manager,
+                                                           mock_calendar, mock_gmail):
+        """Test that fetch_agency_docs_parallel returns correct data structure."""
+        from agency_docs import fetch_agency_docs_parallel
+
+        # Mock lookups with sample data
+        mock_get_creds.return_value = MagicMock()
+
+        # Gmail returns contacts with poc_role assigned
+        mock_gmail.return_value = [
+            {"name": "John Smith", "email": "john@example.com", "title": "IT Director", "phone": "555-1234"}
+        ]
+        mock_calendar.return_value = [
+            {"name": "Team Meeting", "date": "Jun 24, 2026", "time": "2:00 PM", "attendee_count": 5, "url": "..."}
+        ]
+
+        mock_manager_instance = MagicMock()
+        mock_manager_instance.search_department_documents.return_value = [
+            {"name": "Site Survey", "owner": "John Doe", "last_modified": "2026-06-24", "url": "..."}
+        ]
+        mock_drive_manager.return_value = mock_manager_instance
+
+        result = fetch_agency_docs_parallel("West Memphis Police", "memphispd.gov", {})
+
+        # Verify structure
+        assert isinstance(result["contacts"], list)
+        assert isinstance(result["docs"], list)
+        assert isinstance(result["events"], list)
+        assert isinstance(result["errors"], dict)
+
+    @patch('agency_docs.extract_department_contacts')
+    @patch('agency_docs.search_department_calendar_events')
+    @patch('agency_docs.GoogleDriveManager')
+    @patch('agency_docs.google_oauth.get_credentials')
+    def test_fetch_agency_docs_parallel_assigns_poc_role(self, mock_get_creds, mock_drive_manager,
+                                                          mock_calendar, mock_gmail):
+        """Test that contacts have poc_role assigned by assign_contact_to_role."""
+        from agency_docs import fetch_agency_docs_parallel
+
+        mock_get_creds.return_value = MagicMock()
+
+        # Gmail returns contacts
+        mock_gmail.return_value = [
+            {"name": "John Smith", "email": "john@example.com", "title": "IT Director", "phone": "555-1234"}
+        ]
+        mock_calendar.return_value = []
+
+        mock_manager_instance = MagicMock()
+        mock_manager_instance.search_department_documents.return_value = []
+        mock_drive_manager.return_value = mock_manager_instance
+
+        result = fetch_agency_docs_parallel("West Memphis Police", "memphispd.gov", {})
+
+        # Verify contacts have poc_role assigned
+        assert len(result["contacts"]) > 0
+        for contact in result["contacts"]:
+            assert "poc_role" in contact
+            assert contact["poc_role"] in [
+                "Information Technology", "Facilities Engineer", "Radio Shop Engineer",
+                "RTCC/RTIC", "Crane Contractor", "Tower Climber Contractor",
+                "BRINC Project Manager", "Other"
+            ]
+
+    @patch('agency_docs.extract_department_contacts')
+    @patch('agency_docs.search_department_calendar_events')
+    @patch('agency_docs.GoogleDriveManager')
+    @patch('agency_docs.google_oauth.get_credentials')
+    def test_fetch_agency_docs_parallel_handles_gmail_error(self, mock_get_creds, mock_drive_manager,
+                                                             mock_calendar, mock_gmail):
+        """Test that Gmail errors are recorded but other lookups continue."""
+        from agency_docs import fetch_agency_docs_parallel
+
+        mock_get_creds.return_value = MagicMock()
+        mock_gmail.side_effect = Exception("Gmail API error")
+        mock_calendar.return_value = [{"name": "Meeting", "date": "Jun 24, 2026", "time": "2:00 PM", "attendee_count": 3, "url": "..."}]
+
+        mock_manager_instance = MagicMock()
+        mock_manager_instance.search_department_documents.return_value = [{"name": "Doc", "owner": "Jane", "last_modified": "2026-06-24", "url": "..."}]
+        mock_drive_manager.return_value = mock_manager_instance
+
+        result = fetch_agency_docs_parallel("West Memphis Police", "memphispd.gov", {})
+
+        # Verify error is recorded
+        assert "gmail" in result["errors"]
+        # But other results should still be present
+        assert isinstance(result["docs"], list)
+        assert isinstance(result["events"], list)
+
+    @patch('agency_docs.extract_department_contacts')
+    @patch('agency_docs.search_department_calendar_events')
+    @patch('agency_docs.GoogleDriveManager')
+    @patch('agency_docs.google_oauth.get_credentials')
+    def test_fetch_agency_docs_parallel_handles_drive_error(self, mock_get_creds, mock_drive_manager,
+                                                             mock_calendar, mock_gmail):
+        """Test that Drive errors are recorded but other lookups continue."""
+        from agency_docs import fetch_agency_docs_parallel
+
+        mock_get_creds.return_value = None  # Simulate no credentials
+        mock_gmail.return_value = [{"name": "John", "email": "john@example.com", "title": "", "phone": ""}]
+        mock_calendar.return_value = []
+
+        # Drive manager will handle the None credentials case
+        mock_drive_manager.side_effect = Exception("Drive API error")
+
+        result = fetch_agency_docs_parallel("West Memphis Police", "memphispd.gov", {})
+
+        # Verify error is recorded
+        assert "drive" in result["errors"]
+        # But other results should still be present
+        assert isinstance(result["contacts"], list)
+        assert isinstance(result["events"], list)
+
+    @patch('agency_docs.extract_department_contacts')
+    @patch('agency_docs.search_department_calendar_events')
+    @patch('agency_docs.GoogleDriveManager')
+    @patch('agency_docs.google_oauth.get_credentials')
+    def test_fetch_agency_docs_parallel_handles_calendar_error(self, mock_get_creds, mock_drive_manager,
+                                                                mock_calendar, mock_gmail):
+        """Test that Calendar errors are recorded but other lookups continue."""
+        from agency_docs import fetch_agency_docs_parallel
+
+        mock_get_creds.return_value = MagicMock()
+        mock_gmail.return_value = [{"name": "John", "email": "john@example.com", "title": "IT Director", "phone": "555-1234"}]
+        mock_calendar.side_effect = Exception("Calendar API error")
+
+        mock_manager_instance = MagicMock()
+        mock_manager_instance.search_department_documents.return_value = [{"name": "Doc", "owner": "Jane", "last_modified": "2026-06-24", "url": "..."}]
+        mock_drive_manager.return_value = mock_manager_instance
+
+        result = fetch_agency_docs_parallel("West Memphis Police", "memphispd.gov", {})
+
+        # Verify error is recorded
+        assert "calendar" in result["errors"]
+        # But other results should still be present
+        assert isinstance(result["contacts"], list)
+        assert isinstance(result["docs"], list)
