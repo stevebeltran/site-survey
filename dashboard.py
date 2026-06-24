@@ -1,4 +1,4 @@
-import os
+﻿import os
 import json
 import re
 import subprocess
@@ -111,12 +111,16 @@ if "customer_info" not in st.session_state:
         "poc_phone": "",
         "it_director": "",
         "it_email": "",
+        "it_phone": "",
         "facilities_engineer": "",
         "facilities_email": "",
+        "facilities_phone": "",
         "rtcc_name": "",
         "rtcc_email": "",
+        "rtcc_phone": "",
         "radio_shop_name": "",
         "radio_shop_email": "",
+        "radio_shop_phone": "",
         "crane_contractor": "",
         "tower_climber_contractor": "",
         "brinc_pm": "",
@@ -191,6 +195,30 @@ def _default_master_document_name():
     return f"Master DFR Site Survey {survey_date}.docx"
 
 
+def _report_contact_preview_rows():
+    """Build the same contact rows used by the report generator for on-screen review."""
+    customer_info = st.session_state.get("customer_info", {})
+    rows = [
+        ("Agency Name / Address", reporter._format_contact_block(
+            customer_info.get("agency_name", ""),
+            customer_info.get("agency_address", ""),
+        )),
+        ("Point of Contact", reporter._format_contact_block(
+            customer_info.get("poc_name", ""),
+            customer_info.get("poc_email", ""),
+            customer_info.get("poc_phone", ""),
+        )),
+        ("RTCC/RTIC", reporter._format_role_contact(customer_info, "RTCC", "rtcc_name", "rtcc_email", "rtcc_phone")),
+        ("Information Technology", reporter._format_role_contact(customer_info, "IT", "it_director", "it_email", "it_phone")),
+        ("Facilities Engineer", reporter._format_role_contact(customer_info, "Facilities", "facilities_engineer", "facilities_email", "facilities_phone")),
+        ("Radio Shop Engineer", reporter._format_role_contact(customer_info, "Radio Shop", "radio_shop_name", "radio_shop_email", "radio_shop_phone")),
+        ("Crane Contractor", reporter._format_scalar_contact(customer_info, "crane_contractor", "DNA")),
+        ("Tower Climber Contractor", reporter._format_scalar_contact(customer_info, "tower_climber_contractor", "DNA")),
+        ("BRINC Project Manager", reporter._format_scalar_contact(customer_info, "brinc_pm", "DNA")),
+    ]
+    return rows
+
+
 def _derive_survey_date_from_sites(site_data_list):
     """Return the most common EXIF capture date from processed site images."""
     date_counts = {}
@@ -252,6 +280,20 @@ def _save_session_metadata(site_data):
                     json.dump(serializable_site, f, indent=4)
             except Exception as e:
                 print(f"Error saving session metadata: {e}")
+
+
+def _append_integration_log(message):
+    """Store integration activity as timestamped tuples for later grouping/filtering."""
+    timestamp = datetime.datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state.integration_logs.append((timestamp, message))
+
+
+def _format_integration_log(entry):
+    """Render legacy string logs and new timestamped tuples consistently."""
+    if isinstance(entry, tuple) and len(entry) == 2:
+        timestamp, message = entry
+        return f"[{timestamp}] {message}"
+    return str(entry)
 
 
 def _get_displayable_image_path(image_path, site_folder=None):
@@ -354,12 +396,12 @@ def _run_connected_docs_search(agency, city=""):
         for key in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email"):
             if contacts.get(key):
                 st.session_state.customer_info[key] = contacts[key]
-        st.session_state.integration_logs.append(f"[Gmail API] Found {len(found)} contacts for {agency}")
+        _append_integration_log(f"[Gmail API] Found {len(found)} contacts for {agency}")
         found_any = True
     elif contact_status == "auth_error":
-        st.session_state.integration_logs.append(f"[Gmail API] Auth error: {contacts.get('error', '')}")
+        _append_integration_log(f"[Gmail API] Auth error: {contacts.get('error', '')}")
     else:
-        st.session_state.integration_logs.append(f"[Gmail API] No contacts found for {agency}")
+        _append_integration_log(f"[Gmail API] No contacts found for {agency}")
 
     # Drive: Gemini notes & folders
     drive_results = search_drive_for_gemini_notes(agency, city)
@@ -368,7 +410,7 @@ def _run_connected_docs_search(agency, city=""):
         st.session_state["drive_gemini_results"] = drive_results
         notes_count = len(drive_results.get("gemini_notes", []))
         folders_count = len(drive_results.get("drive_folders", []))
-        st.session_state.integration_logs.append(
+        _append_integration_log(
             f"[Drive API] Found {notes_count} Gemini notes, {folders_count} folders for {agency}"
         )
         specs = drive_results.get("extracted_specs", {})
@@ -377,7 +419,7 @@ def _run_connected_docs_search(agency, city=""):
                 st.session_state.customer_info[spec_key] = specs[spec_key]
         found_any = True
     elif drive_status == "auth_error":
-        st.session_state.integration_logs.append(f"[Drive API] Auth error: {drive_results.get('error', '')}")
+        _append_integration_log(f"[Drive API] Auth error: {drive_results.get('error', '')}")
 
     # Jira tickets
     jira_results = search_jira_for_tickets(
@@ -388,12 +430,12 @@ def _run_connected_docs_search(agency, city=""):
     )
     st.session_state["jira_results"] = jira_results
     if jira_results["status"] == "connected":
-        st.session_state.integration_logs.append(
+        _append_integration_log(
             f"[Jira API] Found {len(jira_results['tickets'])} tickets for {agency}"
         )
         found_any = True
     elif jira_results["status"] == "error":
-        st.session_state.integration_logs.append(f"[Jira API] Error: {jira_results['error']}")
+        _append_integration_log(f"[Jira API] Error: {jira_results['error']}")
 
     # HubSpot records
     hubspot_results = search_hubspot_for_records(
@@ -404,29 +446,29 @@ def _run_connected_docs_search(agency, city=""):
     if hubspot_results["status"] == "connected":
         co_count = len(hubspot_results["companies"])
         deal_count = len(hubspot_results["deals"])
-        st.session_state.integration_logs.append(
+        _append_integration_log(
             f"[HubSpot API] Found {co_count} companies, {deal_count} deals for {agency}"
         )
         found_any = True
     elif hubspot_results["status"] == "error":
-        st.session_state.integration_logs.append(f"[HubSpot API] Error: {hubspot_results['error']}")
+        _append_integration_log(f"[HubSpot API] Error: {hubspot_results['error']}")
 
     # Calendar events
     calendar_results = search_calendar_for_events(agency, city)
     st.session_state["calendar_results"] = calendar_results
     if calendar_results["status"] == "connected":
-        st.session_state.integration_logs.append(
+        _append_integration_log(
             f"[Calendar API] Found {len(calendar_results['events'])} events for {agency}"
         )
         found_any = True
     elif calendar_results["status"] == "auth_error":
-        st.session_state.integration_logs.append(f"[Calendar API] Auth error: {calendar_results.get('error', '')}")
+        _append_integration_log(f"[Calendar API] Auth error: {calendar_results.get('error', '')}")
 
     st.session_state._last_doc_search_agency = agency
     return found_any
 
 
-# Header – compact banner with BRINC logo
+# Header â€“ compact banner with BRINC logo
 import base64 as _b64
 
 def _logo_b64():
@@ -475,10 +517,10 @@ with st.sidebar:
     
     st.subheader("1. Survey Settings")
     output_dir = _resolve_app_path("./processed_sites")
-    proximity_radius = st.slider("Clustering Proximity (Meters)", min_value=10, max_value=500, value=90)
+    proximity_radius = 90
     
     st.subheader("2. Integrations & Credentials")
-    with st.expander("API Configurations"):
+    with st.expander("API Configurations", expanded=False):
         hubspot_api = st.text_input("HubSpot Access Token", type="password",
                                      value=st.secrets.get("HUBSPOT_ACCESS_TOKEN", ""))
         jira_url = st.text_input("Jira Server URL",
@@ -511,6 +553,56 @@ with st.sidebar:
         google_oauth.render_connect_button()
 
     st.divider()
+    st.subheader("Previous Sessions")
+    resolved_output_dir = _resolve_app_path(output_dir)
+    if os.path.exists(resolved_output_dir):
+        subdirs = [
+            d for d in os.listdir(resolved_output_dir)
+            if os.path.isdir(os.path.join(resolved_output_dir, d))
+            and d != "__pycache__"
+            and d != "Unclassified_No_GPS"
+        ]
+        if subdirs:
+            for d in sorted(subdirs):
+                meta_file = os.path.join(resolved_output_dir, d, "session_metadata.json")
+                display_name = None
+
+                if os.path.exists(meta_file):
+                    try:
+                        with open(meta_file, "r") as mf:
+                            loaded_metadata = json.load(mf)
+                        if "customer_info" in loaded_metadata and loaded_metadata["customer_info"].get("agency_name"):
+                            display_name = loaded_metadata["customer_info"]["agency_name"]
+                    except Exception:
+                        pass
+
+                if not display_name:
+                    display_name = d.replace("Site_1_", "").replace("Site_2_", "").replace("Site_3_", "").replace("_", " ").replace("Site-001", "").replace("Site-002", "")
+                    if "Lansing" in display_name:
+                        display_name = "Lansing Illinois Police"
+
+                if st.button(display_name, key=f"sidebar_prev_sess_btn_{d}", width="stretch"):
+                    if os.path.exists(meta_file):
+                        try:
+                            with open(meta_file, "r") as mf:
+                                loaded_site = json.load(mf)
+                            st.session_state.processed_sites = [loaded_site]
+                            if loaded_site.get("images"):
+                                st.session_state.active_bg_image = loaded_site["images"][0]["filename"]
+                            if "customer_info" in loaded_site:
+                                st.session_state.customer_info = loaded_site["customer_info"]
+                            st.success(f"Loaded session for {display_name}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to load session: {e}")
+                    else:
+                        st.warning("No session_metadata.json found.")
+        else:
+            st.caption("No previous sessions found.")
+    else:
+        st.caption("No output directory found.")
+
+    st.divider()
     st.caption("[Privacy Policy](/Privacy_Policy) · [Terms of Service](/Terms_of_Service)")
 
 # Ingestion Controls
@@ -530,8 +622,16 @@ _has_sites = bool(st.session_state.get("processed_sites"))
 _upload_col, _status_col = st.columns(2)
 with _upload_col:
     with st.expander("📤 Upload Survey Photos", expanded=not _has_sites):
+        st.markdown("**🛰️ EXIF Scan & Clustering**")
+        proximity_radius = st.slider(
+            "🛰️ Clustering Proximity (Meters)",
+            min_value=10,
+            max_value=500,
+            value=proximity_radius,
+            help="Controls how tightly photos must cluster before they are treated as the same site.",
+        )
         clustering_method = st.selectbox(
-            "Clustering Method",
+            "🧭 Clustering Method",
             ["Radius (90m)", "DBSCAN (auto)"],
             index=0,
             key="clustering_method",
@@ -576,7 +676,7 @@ with _upload_col:
         else:
             client_name = "Untitled_Site_Survey"
 
-# Auto-process on upload — runs once per file set, no manual button needed
+# Auto-process on upload â€” runs once per file set, no manual button needed
 if uploaded_files and not st.session_state.get("_auto_processed"):
     st.session_state._auto_processed = True
 
@@ -585,8 +685,8 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
             _step_placeholder = status.empty()
             _detail_placeholder = status.empty()
             def _update_processing_progress(percent, message):
-                status.update(label=f"Processing — {int(percent)}%")
-                _detail_placeholder.write(f"⏳ {message}")
+                status.update(label=f"Processing â€” {int(percent)}%")
+                _detail_placeholder.write(f"â³ {message}")
 
             try:
                 st.session_state.processed_sites = []
@@ -870,8 +970,8 @@ def _render_site_checklist(site, site_idx):
             site.flight.airspace_class = st.text_input(
                 "Airspace Class", value=site.flight.airspace_class or "",
                 key=f"airspace_{site_idx}")
-            st.text(f"Nearby Airports: {site.flight.nearby_airports or '—'}")
-            st.text(f"Nearby Heliports: {site.flight.nearby_heliports or '—'}")
+            st.text(f"Nearby Airports: {site.flight.nearby_airports or 'â€”'}")
+            st.text(f"Nearby Heliports: {site.flight.nearby_heliports or 'â€”'}")
         with col2:
             site.flight.launch_direction = st.text_input(
                 "Launch Direction", value=site.flight.launch_direction or "",
@@ -893,8 +993,275 @@ def _render_site_checklist(site, site_idx):
                 )
 
 
+def _render_annotator_workspace(selected_site):
+    """Render the full-width image annotation workspace for one site."""
+    st.markdown(f"### {reporter._format_short_address(selected_site['address'])}")
+    st.write(f"📁 **Local Folder:** `{os.path.basename(selected_site['folder_path'])}`")
+    st.caption(selected_site['folder_path'])
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("##### Infrastructure Detection")
+        st.write(f"🪜 **Roof Access:** {selected_site['analysis'].get('roof_access')}")
+        st.write(f"🏠 **Roof Type:** {selected_site['analysis'].get('roof_type')}")
+    with col_b:
+        st.markdown("##### Mounting & Hardware")
+        st.write(f"📐 **Mounts:** {', '.join(selected_site['analysis'].get('mounting_structures', [])) or 'None'}")
+        st.write(f"🔌 **Hardware:** {', '.join(selected_site['analysis'].get('hardware', [])) or 'None'}")
+
+    st.divider()
+    st.subheader("🛠️ Interactive Rooftop Layout & Annotator")
+    st.write("1. Click a thumbnail below to select the background. 2. Select node type/label. 3. Click directly on the image to place the node!")
+
+    st.markdown("##### Select Background Photo:")
+    images_list = selected_site.get('images', [])
+    cols_per_row = 6
+    for i in range(0, len(images_list), cols_per_row):
+        chunk = images_list[i:i+cols_per_row]
+        col_thumb = st.columns(cols_per_row)
+        for idx_in_chunk, img in enumerate(chunk):
+            global_idx = i + idx_in_chunk
+            with col_thumb[idx_in_chunk]:
+                img_path = img.get('dest_path') or img.get('path')
+                thumb_path = _get_displayable_image_path(img_path, site_folder=selected_site.get('folder_path'))
+                if thumb_path:
+                    is_active = img['filename'] == st.session_state.active_bg_image
+                    st.image(thumb_path, width=120)
+                    btn_label = "🎯 Active" if is_active else "Select"
+                    if st.button(btn_label, key=f"sel_thumb_{selected_site['site_id']}_{global_idx}", width="stretch"):
+                        st.session_state.active_bg_image = img['filename']
+                        st.session_state.last_click[selected_site['site_id']] = None
+                        st.rerun()
+                else:
+                    st.caption(f"Error: {img['filename'][:8]}...")
+
+    if not st.session_state.active_bg_image and selected_site.get('images'):
+        st.session_state.active_bg_image = selected_site['images'][0]['filename']
+
+    if not st.session_state.active_bg_image:
+        st.warning("Please upload or process images first to mark up.")
+        return
+
+    active_img_meta = next((img for img in selected_site['images'] if img['filename'] == st.session_state.active_bg_image), None)
+    if not active_img_meta and selected_site.get('images'):
+        active_img_meta = selected_site['images'][0]
+        st.session_state.active_bg_image = active_img_meta['filename']
+
+    if not active_img_meta:
+        st.warning("Please upload or process images first to mark up.")
+        return
+
+    bg_path = active_img_meta.get('dest_path') or active_img_meta.get('path')
+    bg_display_path = _get_displayable_image_path(bg_path, site_folder=selected_site.get('folder_path'))
+
+    if 'markers_by_image' not in selected_site:
+        selected_site['markers_by_image'] = {}
+        if 'markers' in selected_site and selected_site['markers']:
+            first_img = selected_site['images'][0]['filename'] if selected_site.get('images') else None
+            if first_img:
+                selected_site['markers_by_image'][first_img] = selected_site.pop('markers', [])
+
+    if 'image_placements_by_image' not in selected_site:
+        selected_site['image_placements_by_image'] = {}
+
+    if st.session_state.active_bg_image not in selected_site['markers_by_image']:
+        selected_site['markers_by_image'][st.session_state.active_bg_image] = []
+    if st.session_state.active_bg_image not in selected_site['image_placements_by_image']:
+        selected_site['image_placements_by_image'][st.session_state.active_bg_image] = []
+
+    current_markers = selected_site['markers_by_image'][st.session_state.active_bg_image]
+    current_placements = selected_site['image_placements_by_image'][st.session_state.active_bg_image]
+
+    if 'eng_note' not in selected_site:
+        selected_site['eng_note'] = (
+            "Responder may be installed at this time with 110V, 20A service. "
+            "If Guardian is installed in the future, it will require 208V, 30A service "
+            "with additional wiring and electrical provisions to support the higher voltage requirement."
+        )
+
+    images_dir = os.path.join(os.path.dirname(__file__), "images")
+    available_images = []
+    if os.path.exists(images_dir):
+        for img_file in os.listdir(images_dir):
+            if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                available_images.append(img_file)
+    available_images.sort()
+
+    st.markdown("##### Placement Customization (To place on image click)")
+    node_type_options = {
+        "Electric": ["15 Amp 110V AC", "20 Amp 110V AC", "30 Amp 208V AC"],
+        "Data": ["BRINC RF Site 25 50", "BRINC Station 25 50", "BRINC Radar Site 10 10"],
+        "RF": ["10 foot pole", "20 foot pole", "30 foot pole", "microsite", "Tower"],
+        "Unistrut": ["3 Unistrut", "4 Unistrut"],
+        "Lift": ["Crane", "Fire Department"]
+    }
+
+    placement_mode = st.radio("What to place:", ["📍 Node", "🖼️ Image"], horizontal=True, key=f"int_placement_mode_{selected_site['site_id']}")
+    m_type = None
+    m_label = None
+    placement_image = None
+
+    if "Node" in placement_mode:
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            m_type = st.selectbox("Node Type", ["Electric", "Data", "RF", "Unistrut", "Lift"], key=f"int_mtype_{selected_site['site_id']}")
+        with col_m2:
+            available_labels = node_type_options.get(m_type, [""])
+            m_label = st.selectbox("Node Label", available_labels, key=f"int_mlabel_{selected_site['site_id']}")
+    else:
+        if available_images:
+            placement_image = st.selectbox("Select Image to Place", available_images, key=f"int_placement_img_{selected_site['site_id']}")
+        else:
+            st.warning("No images available in the images directory.")
+
+    st.markdown("🎯 **Click on the image below to place this node:**")
+    img_base_name = os.path.splitext(st.session_state.active_bg_image)[0]
+    output_drawing_path = os.path.join(selected_site['folder_path'], f"engineering_layout_{img_base_name}.png")
+    display_img_path = output_drawing_path if os.path.exists(output_drawing_path) else bg_display_path
+    if not display_img_path:
+        st.error(f"Cannot preview or annotate this image: {active_img_meta['filename']}")
+        return
+
+    canvas_key = f"canvas_{selected_site['site_id']}_{hash(st.session_state.active_bg_image)}"
+    try:
+        with Image.open(display_img_path) as img_check:
+            img_width, img_height = img_check.size
+        if img_height > img_width:
+            display_size = min(600, img_height)
+            click = streamlit_image_coordinates(display_img_path, key=canvas_key, height=display_size)
+        else:
+            display_size = min(600, img_width)
+            click = streamlit_image_coordinates(display_img_path, key=canvas_key, width=display_size)
+    except Exception:
+        click = streamlit_image_coordinates(display_img_path, key=canvas_key, width=600)
+
+    if click:
+        click_key = f"{selected_site['site_id']}_{st.session_state.active_bg_image}_{click.get('x')}_{click.get('y')}"
+        if st.session_state.last_click.get(selected_site['site_id']) != click_key:
+            st.session_state.last_click[selected_site['site_id']] = click_key
+            click_x = click.get("x", 0)
+            click_y = click.get("y", 0)
+            try:
+                with Image.open(display_img_path) as temp_img:
+                    w, h = temp_img.size
+                if h > w:
+                    display_h = min(600, h)
+                    display_w = display_h * w / h
+                else:
+                    display_w = min(600, w)
+                    display_h = display_w * h / w
+                ratio_x = click_x / display_w
+                ratio_y = click_y / display_h
+                is_drawing = os.path.exists(output_drawing_path)
+                photo_width_ratio = 0.80 if is_drawing else 1.0
+
+                if ratio_x <= photo_width_ratio:
+                    if "Node" in placement_mode:
+                        node_x_pct = (ratio_x / photo_width_ratio) * 100
+                        node_y_pct = ratio_y * 100
+                        label_x_pct = max(node_x_pct - 15, 5)
+                        label_y_pct = max(node_y_pct - 8, 5)
+                        selected_site['markers_by_image'][st.session_state.active_bg_image].append({
+                            'type': m_type,
+                            'label': m_label,
+                            'node_x': node_x_pct,
+                            'node_y': node_y_pct,
+                            'label_x': label_x_pct,
+                            'label_y': label_y_pct
+                        })
+                        success_msg = f"Added {m_label} Node!"
+                    else:
+                        img_x_pct = (ratio_x / photo_width_ratio) * 100
+                        img_y_pct = ratio_y * 100
+                        selected_site['image_placements_by_image'][st.session_state.active_bg_image].append({
+                            'image_name': placement_image,
+                            'x': img_x_pct,
+                            'y': img_y_pct
+                        })
+                        success_msg = f"Added {placement_image}!"
+
+                    reporter.create_engineering_drawing(
+                        bg_display_path or bg_path,
+                        output_drawing_path,
+                        selected_site['markers_by_image'][st.session_state.active_bg_image],
+                        selected_site['eng_note'],
+                        address=selected_site['address'],
+                        image_placements=selected_site['image_placements_by_image'][st.session_state.active_bg_image],
+                        images_dir=images_dir
+                    )
+                    _save_session_metadata(st.session_state.processed_sites)
+                    st.success(success_msg)
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Error registering click: {e}")
+
+    if current_markers:
+        st.markdown("**Placed Markers:**")
+        color_emoji = {
+            'Electric': '🔴',
+            'Data': '🟠',
+            'RF': '🟣',
+            'Unistrut': '⚪',
+            'Lift': '🟡',
+        }
+        for idx, marker in enumerate(current_markers):
+            mcol1, mcol2 = st.columns([3, 1])
+            with mcol1:
+                emoji = color_emoji.get(marker.get('type', ''), '⚫')
+                st.markdown(f"{emoji} **{marker.get('type', '')}** â€” {marker.get('label', '')}")
+            with mcol2:
+                if st.button("✕ Remove", key=f"del_marker_{selected_site['site_id']}_{st.session_state.active_bg_image}_{idx}"):
+                    selected_site['markers_by_image'][st.session_state.active_bg_image].pop(idx)
+                    if selected_site['markers_by_image'][st.session_state.active_bg_image]:
+                        reporter.create_engineering_drawing(
+                            bg_display_path or bg_path,
+                            output_drawing_path,
+                            selected_site['markers_by_image'][st.session_state.active_bg_image],
+                            selected_site['eng_note'],
+                            address=selected_site['address'],
+                            image_placements=selected_site['image_placements_by_image'].get(st.session_state.active_bg_image, []),
+                            images_dir=images_dir
+                        )
+                    elif os.path.exists(output_drawing_path):
+                        os.remove(output_drawing_path)
+                    _save_session_metadata(st.session_state.processed_sites)
+                    st.rerun()
+    else:
+        st.caption("No markers placed yet.")
+
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        selected_site['eng_note'] = st.text_area("Engineer's Notes Text", value=selected_site['eng_note'], key=f"int_engnote_{selected_site['site_id']}")
+    with col_btn2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🗑️ Clear All Placements", key=f"int_clearnode_{selected_site['site_id']}", width="stretch"):
+            selected_site['markers_by_image'][st.session_state.active_bg_image] = []
+            selected_site['image_placements_by_image'][st.session_state.active_bg_image] = []
+            if os.path.exists(output_drawing_path):
+                os.remove(output_drawing_path)
+            _save_session_metadata(st.session_state.processed_sites)
+            st.warning("Cleared all nodes and images for this photo.")
+            st.rerun()
+
+        if st.button("🔄 Refresh Rendering", key=f"int_redraw_{selected_site['site_id']}", width="stretch"):
+            reporter.create_engineering_drawing(
+                bg_display_path or bg_path,
+                output_drawing_path,
+                selected_site['markers_by_image'][st.session_state.active_bg_image],
+                selected_site['eng_note'],
+                address=selected_site['address'],
+                image_placements=selected_site['image_placements_by_image'][st.session_state.active_bg_image],
+                images_dir=images_dir
+            )
+            _save_session_metadata(st.session_state.processed_sites)
+            st.rerun()
+
+    if os.path.exists(output_drawing_path):
+        st.image(output_drawing_path, caption="Active Engineering Markup Layout Preview", width="stretch")
+
+
 # Layout Columns
-tab1, tab2, tab3 = st.tabs(["📋 Survey Pipeline", "🔗 Workflow Sync", "📈 Analytics & Logs"])
+tab1, tab2, tab3, tab4 = st.tabs(["📋 Survey Pipeline", "🛠️ Annotate", "🔗 Workflow Sync", "📈 Analytics & Logs"])
 
 with tab1:
     # 0. Customer Info Panel at the top
@@ -995,9 +1362,9 @@ with tab1:
                 short_summary = summary[:50] + "..." if len(summary) > 50 else summary
                 status_badge = f" `{status}`" if status else ""
                 if url:
-                    st.markdown(f"[{key}]({url}) — {short_summary}{status_badge}")
+                    st.markdown(f"[{key}]({url}) â€” {short_summary}{status_badge}")
                 else:
-                    st.caption(f"{key} — {short_summary}{status_badge}")
+                    st.caption(f"{key} â€” {short_summary}{status_badge}")
         elif jira_data and jira_data.get("status") == "error":
             st.caption(f"⚠️ Jira: {jira_data.get('error', 'Unknown error')}")
 
@@ -1046,7 +1413,7 @@ with tab1:
                     st.caption(short_title)
                 detail = date[:10] if date else ""
                 if attendees_count:
-                    detail += f"  ·  {attendees_count} attendee{'s' if attendees_count != 1 else ''}"
+                    detail += f" · {attendees_count} attendee{'s' if attendees_count != 1 else ''}"
                 if detail:
                     st.caption(detail)
         elif cal_data and cal_data.get("status") == "auth_error":
@@ -1055,29 +1422,27 @@ with tab1:
         if not has_any:
             st.caption("No connected documents yet. Enter an Agency Name to auto-search.")
 
-    # --- POC / Contacts Table ---
-    st.markdown("**Points of Contact**")
-    # Counter for generating unique row IDs (survives reruns)
-    if "_poc_uid_counter" not in st.session_state:
-        st.session_state._poc_uid_counter = 0
+    if st.session_state.processed_sites:
+        # --- POC / Contacts Table ---
+        st.markdown("**Points of Contact**")
+        if "_poc_uid_counter" not in st.session_state:
+            st.session_state._poc_uid_counter = 0
 
-    def _next_poc_uid():
-        st.session_state._poc_uid_counter += 1
-        return st.session_state._poc_uid_counter
+        def _next_poc_uid():
+            st.session_state._poc_uid_counter += 1
+            return st.session_state._poc_uid_counter
 
-    # Initialize editable contacts from session state
-    if "poc_rows" not in st.session_state:
-        st.session_state.poc_rows = []
-        # Seed from existing customer_info if present
-        if st.session_state.customer_info.get("poc_name") or st.session_state.customer_info.get("poc_email"):
-            st.session_state.poc_rows.append({
-                "_uid": _next_poc_uid(),
-                "role": "POC",
-                "name": st.session_state.customer_info.get("poc_name", ""),
-                "email": st.session_state.customer_info.get("poc_email", ""),
-                "title": "",
-                "phone": st.session_state.customer_info.get("poc_phone", ""),
-            })
+        if "poc_rows" not in st.session_state:
+            st.session_state.poc_rows = []
+            if st.session_state.customer_info.get("poc_name") or st.session_state.customer_info.get("poc_email"):
+                st.session_state.poc_rows.append({
+                    "_uid": _next_poc_uid(),
+                    "role": "POC",
+                    "name": st.session_state.customer_info.get("poc_name", ""),
+                    "email": st.session_state.customer_info.get("poc_email", ""),
+                    "title": "",
+                    "phone": st.session_state.customer_info.get("poc_phone", ""),
+                })
         if st.session_state.customer_info.get("it_director") or st.session_state.customer_info.get("it_email"):
             st.session_state.poc_rows.append({
                 "_uid": _next_poc_uid(),
@@ -1085,197 +1450,191 @@ with tab1:
                 "name": st.session_state.customer_info.get("it_director", ""),
                 "email": st.session_state.customer_info.get("it_email", ""),
                 "title": "",
-                "phone": "",
+                "phone": st.session_state.customer_info.get("it_phone", ""),
             })
 
-    # Merge in any new contacts pulled from Gmail (avoid duplicates)
-    gmail_contacts = st.session_state.pop("gmail_found_contacts", None)
-    if gmail_contacts:
-        existing_emails = {r["email"].lower() for r in st.session_state.poc_rows if r.get("email")}
-        for c in gmail_contacts:
-            c_email_lower = c["email"].lower()
-            if c_email_lower not in existing_emails:
-                st.session_state.poc_rows.append({
-                    "_uid": _next_poc_uid(),
-                    "role": "",
-                    "name": c.get("name", ""),
-                    "email": c["email"],
-                    "title": c.get("title", ""),
-                    "phone": c.get("phone", ""),
-                })
-                existing_emails.add(c_email_lower)
-            else:
-                # Update existing row with newly found title/phone if missing
-                for row in st.session_state.poc_rows:
-                    if row.get("email", "").lower() == c_email_lower:
-                        if c.get("title") and not row.get("title"):
-                            row["title"] = c["title"]
-                        if c.get("phone") and not row.get("phone"):
-                            row["phone"] = c["phone"]
-                        break
+        gmail_contacts = st.session_state.pop("gmail_found_contacts", None)
+        if gmail_contacts:
+            existing_emails = {r["email"].lower() for r in st.session_state.poc_rows if r.get("email")}
+            for c in gmail_contacts:
+                c_email_lower = c["email"].lower()
+                if c_email_lower not in existing_emails:
+                    st.session_state.poc_rows.append({
+                        "_uid": _next_poc_uid(),
+                        "role": "",
+                        "name": c.get("name", ""),
+                        "email": c["email"],
+                        "title": c.get("title", ""),
+                        "phone": c.get("phone", ""),
+                    })
+                    existing_emails.add(c_email_lower)
+                else:
+                    for row in st.session_state.poc_rows:
+                        if row.get("email", "").lower() == c_email_lower:
+                            if c.get("title") and not row.get("title"):
+                                row["title"] = c["title"]
+                            if c.get("phone") and not row.get("phone"):
+                                row["phone"] = c["phone"]
+                            break
 
-    # Render editable rows — keyed by stable _uid, not loop index
-    role_options = ["", "POC", "IT", "Facilities", "RTCC", "Radio Shop", "Other"]
-    rows_to_remove = []
-    # Backfill _uid for any legacy rows that lack one
-    for row in st.session_state.poc_rows:
-        if "_uid" not in row:
-            row["_uid"] = _next_poc_uid()
-    if st.session_state.poc_rows:
-        hc1, hc2, hc3, hc4, hc5, hc6 = st.columns([1, 1.8, 1.8, 1.8, 1.5, 0.5])
-        hc1.caption("Role")
-        hc2.caption("Name")
-        hc3.caption("Title / Rank")
-        hc4.caption("Email")
-        hc5.caption("Phone")
-        hc6.caption("")
-    for i, row in enumerate(st.session_state.poc_rows):
-        uid = row["_uid"]
-        rc1, rc2, rc3, rc4, rc5, rc6 = st.columns([1, 1.8, 1.8, 1.8, 1.5, 0.5])
-        with rc1:
-            st.session_state.poc_rows[i]["role"] = st.selectbox(
-                "Role", role_options, index=role_options.index(row["role"]) if row["role"] in role_options else 0,
-                key=f"poc_role_{uid}", label_visibility="collapsed",
+        role_options = ["", "POC", "IT", "Facilities", "RTCC", "Radio Shop", "Other"]
+        rows_to_remove = []
+        for row in st.session_state.poc_rows:
+            if "_uid" not in row:
+                row["_uid"] = _next_poc_uid()
+        if st.session_state.poc_rows:
+            hc1, hc2, hc3, hc4, hc5, hc6 = st.columns([1, 1.8, 1.8, 1.8, 1.5, 0.5])
+            hc1.caption("Role")
+            hc2.caption("Name")
+            hc3.caption("Title / Rank")
+            hc4.caption("Email")
+            hc5.caption("Phone")
+            hc6.caption("")
+        for i, row in enumerate(st.session_state.poc_rows):
+            uid = row["_uid"]
+            rc1, rc2, rc3, rc4, rc5, rc6 = st.columns([1, 1.8, 1.8, 1.8, 1.5, 0.5])
+            with rc1:
+                st.session_state.poc_rows[i]["role"] = st.selectbox(
+                    "Role", role_options, index=role_options.index(row["role"]) if row["role"] in role_options else 0,
+                    key=f"poc_role_{uid}", label_visibility="collapsed",
+                )
+            with rc2:
+                st.session_state.poc_rows[i]["name"] = st.text_input(
+                    "Name", value=row["name"], key=f"poc_name_{uid}", label_visibility="collapsed",
+                    placeholder="Name",
+                )
+            with rc3:
+                st.session_state.poc_rows[i]["title"] = st.text_input(
+                    "Title", value=row.get("title", ""), key=f"poc_title_{uid}", label_visibility="collapsed",
+                    placeholder="Title / Rank",
+                )
+            with rc4:
+                st.session_state.poc_rows[i]["email"] = st.text_input(
+                    "Email", value=row["email"], key=f"poc_email_{uid}", label_visibility="collapsed",
+                    placeholder="Email",
+                )
+            with rc5:
+                st.session_state.poc_rows[i]["phone"] = st.text_input(
+                    "Phone", value=row.get("phone", ""), key=f"poc_phone_{uid}", label_visibility="collapsed",
+                    placeholder="Phone",
+                )
+            with rc6:
+                if st.button("✕", key=f"poc_del_{uid}"):
+                    rows_to_remove.append(i)
+
+        if rows_to_remove:
+            for idx in sorted(rows_to_remove, reverse=True):
+                removed_uid = st.session_state.poc_rows[idx]["_uid"]
+                for prefix in ("poc_role_", "poc_name_", "poc_title_", "poc_email_", "poc_phone_", "poc_del_"):
+                    st.session_state.pop(f"{prefix}{removed_uid}", None)
+                st.session_state.poc_rows.pop(idx)
+            st.rerun()
+
+        if st.button("＋ Add Contact", key="add_poc_row"):
+            st.session_state.poc_rows.append({"_uid": _next_poc_uid(), "role": "", "name": "", "email": "", "title": "", "phone": ""})
+            st.rerun()
+
+        for k in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email", "it_phone",
+                  "facilities_engineer", "facilities_email", "facilities_phone", "rtcc_name", "rtcc_email", "rtcc_phone",
+                  "radio_shop_name", "radio_shop_email", "radio_shop_phone"):
+            st.session_state.customer_info[k] = ""
+        for row in st.session_state.poc_rows:
+            role = row.get("role", "")
+            if role == "POC" and not st.session_state.customer_info["poc_name"]:
+                st.session_state.customer_info["poc_name"] = row["name"]
+                st.session_state.customer_info["poc_email"] = row["email"]
+                st.session_state.customer_info["poc_phone"] = row.get("phone", "")
+            elif role == "IT" and not st.session_state.customer_info["it_director"]:
+                st.session_state.customer_info["it_director"] = row["name"]
+                st.session_state.customer_info["it_email"] = row["email"]
+                st.session_state.customer_info["it_phone"] = row.get("phone", "")
+            elif role == "Facilities" and not st.session_state.customer_info["facilities_engineer"]:
+                st.session_state.customer_info["facilities_engineer"] = row["name"]
+                st.session_state.customer_info["facilities_email"] = row["email"]
+                st.session_state.customer_info["facilities_phone"] = row.get("phone", "")
+            elif role == "RTCC" and not st.session_state.customer_info["rtcc_name"]:
+                st.session_state.customer_info["rtcc_name"] = row["name"]
+                st.session_state.customer_info["rtcc_email"] = row["email"]
+                st.session_state.customer_info["rtcc_phone"] = row.get("phone", "")
+            elif role == "Radio Shop" and not st.session_state.customer_info["radio_shop_name"]:
+                st.session_state.customer_info["radio_shop_name"] = row["name"]
+                st.session_state.customer_info["radio_shop_email"] = row["email"]
+                st.session_state.customer_info["radio_shop_phone"] = row.get("phone", "")
+
+        st.session_state.customer_info["contacts"] = [
+            {
+                "role": row.get("role", ""),
+                "name": row.get("name", ""),
+                "title": row.get("title", ""),
+                "email": row.get("email", ""),
+                "phone": row.get("phone", ""),
+            }
+            for row in st.session_state.poc_rows
+            if row.get("role") or row.get("name") or row.get("title") or row.get("email") or row.get("phone")
+        ]
+
+        # --- Deployment Specifications ---
+        st.markdown("**Deployment Specifications**")
+        ds1, ds2, ds3 = st.columns(3)
+        with ds1:
+            st.session_state.customer_info["survey_delivery_target"] = st.text_input(
+                "Survey / Delivery Target",
+                value=st.session_state.customer_info.get("survey_delivery_target", ""),
+                placeholder="e.g. Week of September 28, 2026",
             )
-        with rc2:
-            st.session_state.poc_rows[i]["name"] = st.text_input(
-                "Name", value=row["name"], key=f"poc_name_{uid}", label_visibility="collapsed",
-                placeholder="Name",
+        with ds2:
+            st.session_state.customer_info["power_circuit_requirements"] = st.text_input(
+                "Power Circuit Requirements",
+                value=st.session_state.customer_info.get("power_circuit_requirements", ""),
+                placeholder="e.g. 120V / 20A Dedicated Circuit",
             )
-        with rc3:
-            st.session_state.poc_rows[i]["title"] = st.text_input(
-                "Title", value=row.get("title", ""), key=f"poc_title_{uid}", label_visibility="collapsed",
-                placeholder="Title / Rank",
+        with ds3:
+            st.session_state.customer_info["internet_ethernet_access"] = st.text_input(
+                "Internet / Ethernet Access",
+                value=st.session_state.customer_info.get("internet_ethernet_access", ""),
+                placeholder="e.g. DHCP on isolated VLAN",
             )
-        with rc4:
-            st.session_state.poc_rows[i]["email"] = st.text_input(
-                "Email", value=row["email"], key=f"poc_email_{uid}", label_visibility="collapsed",
-                placeholder="Email",
+
+        ds4, ds5, ds6 = st.columns(3)
+        with ds4:
+            st.session_state.customer_info["crane_contractor"] = st.text_input(
+                "Crane Contractor",
+                value=st.session_state.customer_info.get("crane_contractor", ""),
+                placeholder="e.g. Pending crane company",
             )
-        with rc5:
-            st.session_state.poc_rows[i]["phone"] = st.text_input(
-                "Phone", value=row.get("phone", ""), key=f"poc_phone_{uid}", label_visibility="collapsed",
-                placeholder="Phone",
+        with ds5:
+            st.session_state.customer_info["tower_climber_contractor"] = st.text_input(
+                "Tower Climber Contractor",
+                value=st.session_state.customer_info.get("tower_climber_contractor", ""),
+                placeholder="e.g. DNA",
             )
-        with rc6:
-            if st.button("✕", key=f"poc_del_{uid}"):
-                rows_to_remove.append(i)
+        with ds6:
+            st.session_state.customer_info["brinc_pm"] = st.text_input(
+                "BRINC Project Manager",
+                value=st.session_state.customer_info.get("brinc_pm", ""),
+                placeholder="e.g. steven.beltran@brincdrones.com",
+            )
 
-    # Process removals — clean up widget state for removed rows
-    if rows_to_remove:
-        for idx in sorted(rows_to_remove, reverse=True):
-            removed_uid = st.session_state.poc_rows[idx]["_uid"]
-            # Remove stale widget keys so they don't ghost on rerun
-            for prefix in ("poc_role_", "poc_name_", "poc_title_", "poc_email_", "poc_phone_", "poc_del_"):
-                st.session_state.pop(f"{prefix}{removed_uid}", None)
-            st.session_state.poc_rows.pop(idx)
-        st.rerun()
-
-    if st.button("＋ Add Contact", key="add_poc_row"):
-        st.session_state.poc_rows.append({"_uid": _next_poc_uid(), "role": "", "name": "", "email": "", "title": "", "phone": ""})
-        st.rerun()
-
-    # Sync the POC table back to customer_info for report generation
-    # Clear first so removed/changed rows take effect
-    for k in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email",
-              "facilities_engineer", "facilities_email", "rtcc_name", "rtcc_email",
-              "radio_shop_name", "radio_shop_email"):
-        st.session_state.customer_info[k] = ""
-    for row in st.session_state.poc_rows:
-        role = row.get("role", "")
-        if role == "POC" and not st.session_state.customer_info["poc_name"]:
-            st.session_state.customer_info["poc_name"] = row["name"]
-            st.session_state.customer_info["poc_email"] = row["email"]
-            st.session_state.customer_info["poc_phone"] = row.get("phone", "")
-        elif role == "IT" and not st.session_state.customer_info["it_director"]:
-            st.session_state.customer_info["it_director"] = row["name"]
-            st.session_state.customer_info["it_email"] = row["email"]
-        elif role == "Facilities" and not st.session_state.customer_info["facilities_engineer"]:
-            st.session_state.customer_info["facilities_engineer"] = row["name"]
-            st.session_state.customer_info["facilities_email"] = row["email"]
-        elif role == "RTCC" and not st.session_state.customer_info["rtcc_name"]:
-            st.session_state.customer_info["rtcc_name"] = row["name"]
-            st.session_state.customer_info["rtcc_email"] = row["email"]
-        elif role == "Radio Shop" and not st.session_state.customer_info["radio_shop_name"]:
-            st.session_state.customer_info["radio_shop_name"] = row["name"]
-            st.session_state.customer_info["radio_shop_email"] = row["email"]
-
-    # Keep the structured contact list in sync for report generation.
-    # The report template prefers customer_info["contacts"] when present.
-    st.session_state.customer_info["contacts"] = [
-        {
-            "role": row.get("role", ""),
-            "name": row.get("name", ""),
-            "title": row.get("title", ""),
-            "email": row.get("email", ""),
-            "phone": row.get("phone", ""),
-        }
-        for row in st.session_state.poc_rows
-        if row.get("role") or row.get("name") or row.get("title") or row.get("email") or row.get("phone")
-    ]
-
-    # --- Deployment Specifications ---
-    st.markdown("**Deployment Specifications**")
-    ds1, ds2, ds3 = st.columns(3)
-    with ds1:
-        st.session_state.customer_info["survey_delivery_target"] = st.text_input(
-            "Survey / Delivery Target",
-            value=st.session_state.customer_info.get("survey_delivery_target", ""),
-            placeholder="e.g. Week of September 28, 2026",
-        )
-    with ds2:
-        st.session_state.customer_info["power_circuit_requirements"] = st.text_input(
-            "Power Circuit Requirements",
-            value=st.session_state.customer_info.get("power_circuit_requirements", ""),
-            placeholder="e.g. 120V / 20A Dedicated Circuit",
-        )
-    with ds3:
-        st.session_state.customer_info["internet_ethernet_access"] = st.text_input(
-            "Internet / Ethernet Access",
-            value=st.session_state.customer_info.get("internet_ethernet_access", ""),
-            placeholder="e.g. DHCP on isolated VLAN",
-        )
-
-    # Row 2: Contractors & PM
-    ds4, ds5, ds6 = st.columns(3)
-    with ds4:
-        st.session_state.customer_info["crane_contractor"] = st.text_input(
-            "Crane Contractor",
-            value=st.session_state.customer_info.get("crane_contractor", ""),
-            placeholder="e.g. Pending crane company",
-        )
-    with ds5:
-        st.session_state.customer_info["tower_climber_contractor"] = st.text_input(
-            "Tower Climber Contractor",
-            value=st.session_state.customer_info.get("tower_climber_contractor", ""),
-            placeholder="e.g. DNA",
-        )
-    with ds6:
-        st.session_state.customer_info["brinc_pm"] = st.text_input(
-            "BRINC Project Manager",
-            value=st.session_state.customer_info.get("brinc_pm", ""),
-            placeholder="e.g. steven.beltran@brincdrones.com",
-        )
-
-    # Row 3: Follow-up & Action Items
-    ds7, ds8 = st.columns(2)
-    with ds7:
-        st.session_state.customer_info["follow_up_requirements"] = st.text_input(
-            "Follow-up Requirements",
-            value=st.session_state.customer_info.get("follow_up_requirements", ""),
-            placeholder="e.g. Infrastructure for site needs to be completed",
-        )
-    with ds8:
-        st.session_state.customer_info["action_items"] = st.text_input(
-            "Action Items",
-            value=st.session_state.customer_info.get("action_items", ""),
-            placeholder="e.g. Confirm ethernet and power 30 days before install",
-        )
+        ds7, ds8 = st.columns(2)
+        with ds7:
+            st.session_state.customer_info["follow_up_requirements"] = st.text_input(
+                "Follow-up Requirements",
+                value=st.session_state.customer_info.get("follow_up_requirements", ""),
+                placeholder="e.g. Infrastructure for site needs to be completed",
+            )
+        with ds8:
+            st.session_state.customer_info["action_items"] = st.text_input(
+                "Action Items",
+                value=st.session_state.customer_info.get("action_items", ""),
+                placeholder="e.g. Confirm ethernet and power 30 days before install",
+            )
+    else:
+        st.info("Upload survey photos to unlock contact and deployment fields.")
 
     st.divider()
 
-    # Three column layout: Left (Sites), Middle (Map/Markup), Right (History)
-    col1, col2, col3 = st.columns([1, 2, 1])
+    # Two column layout: Left (Sites), Middle (Map/Markup)
+    col1, col2 = st.columns([1, 2])
     
     with col1:
         if st.session_state.processed_sites:
@@ -1342,7 +1701,7 @@ with tab1:
                     fill=True,
                     fill_color="#ef4444",
                     fill_opacity=0.06,
-                    tooltip=f"2-mile radius — {label}",
+                    tooltip=f"2-mile radius â€” {label}",
                 ).add_to(m)
 
                 # Site marker
@@ -1398,311 +1757,18 @@ with tab1:
                 st.write(f"📐 **Mounts:** {', '.join(selected_site['analysis'].get('mounting_structures', [])) or 'None'}")
                 st.write(f"🔌 **Hardware:** {', '.join(selected_site['analysis'].get('hardware', [])) or 'None'}")
                 
-            # Rooftop Engineering Annotator Panel
-            st.divider()
-            st.subheader("🛠️ Interactive Rooftop Layout & Annotator")
-            st.write("1. Click a thumbnail below to select the background. 2. Select node type/label. 3. Click directly on the image to place the node!")
-            
-            # 1. Thumbnails Selection Row
-            st.markdown("##### Select Background Photo:")
-            images_list = selected_site.get('images', [])
-            cols_per_row = 6
-            for i in range(0, len(images_list), cols_per_row):
-                chunk = images_list[i:i+cols_per_row]
-                col_thumb = st.columns(cols_per_row)
-                for idx_in_chunk, img in enumerate(chunk):
-                    global_idx = i + idx_in_chunk
-                    with col_thumb[idx_in_chunk]:
-                        img_path = img.get('dest_path') or img.get('path')
-                        thumb_path = _get_displayable_image_path(img_path, site_folder=selected_site.get('folder_path'))
-                        if thumb_path:
-                            is_active = img['filename'] == st.session_state.active_bg_image
-                            st.image(thumb_path, width=60)
-                            btn_label = "🎯 Active" if is_active else "Select"
-                            if st.button(btn_label, key=f"sel_thumb_{selected_site['site_id']}_{global_idx}", width="stretch"):
-                                st.session_state.active_bg_image = img['filename']
-                                st.session_state.last_click[selected_site['site_id']] = None
-                                st.rerun()
-                        else:
-                            st.caption(f"Error: {img['filename'][:8]}...")
-            
-            # Default to first image if none selected
-            if not st.session_state.active_bg_image and selected_site.get('images'):
-                st.session_state.active_bg_image = selected_site['images'][0]['filename']
-                
-            if st.session_state.active_bg_image:
-                active_img_meta = next((img for img in selected_site['images'] if img['filename'] == st.session_state.active_bg_image), None)
-                if not active_img_meta and selected_site.get('images'):
-                    active_img_meta = selected_site['images'][0]
-                    st.session_state.active_bg_image = active_img_meta['filename']
-
-                if active_img_meta:
-                    bg_path = active_img_meta.get('dest_path') or active_img_meta.get('path')
-                    bg_display_path = _get_displayable_image_path(bg_path, site_folder=selected_site.get('folder_path'))
-
-                    # Markers & Image placements state init - per image
-                    # Backward compatibility: convert old 'markers' format to new 'markers_by_image' format
-                    if 'markers_by_image' not in selected_site:
-                        selected_site['markers_by_image'] = {}
-                        # If old markers exist, assign them to the first image
-                        if 'markers' in selected_site and selected_site['markers']:
-                            first_img = selected_site['images'][0]['filename'] if selected_site.get('images') else None
-                            if first_img:
-                                selected_site['markers_by_image'][first_img] = selected_site.pop('markers', [])
-
-                    if 'image_placements_by_image' not in selected_site:
-                        selected_site['image_placements_by_image'] = {}
-
-                    if st.session_state.active_bg_image not in selected_site['markers_by_image']:
-                        selected_site['markers_by_image'][st.session_state.active_bg_image] = []
-
-                    if st.session_state.active_bg_image not in selected_site['image_placements_by_image']:
-                        selected_site['image_placements_by_image'][st.session_state.active_bg_image] = []
-
-                    # Get markers and placements for current image
-                    current_markers = selected_site['markers_by_image'][st.session_state.active_bg_image]
-                    current_placements = selected_site['image_placements_by_image'][st.session_state.active_bg_image]
-
-                    if 'eng_note' not in selected_site:
-                        selected_site['eng_note'] = (
-                            "Responder may be installed at this time with 110V, 20A service. "
-                            "If Guardian is installed in the future, it will require 208V, 30A service "
-                            "with additional wiring and electrical provisions to support the higher voltage requirement."
-                        )
-
-                    # Get available images from the images directory
-                    images_dir = os.path.join(os.path.dirname(__file__), "images")
-                    available_images = []
-                    if os.path.exists(images_dir):
-                        for img_file in os.listdir(images_dir):
-                            if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
-                                available_images.append(img_file)
-                    available_images.sort()
-
-                    # Form to configure placement - Nodes or Images
-                    st.markdown("##### Placement Customization (To place on image click)")
-
-                    # Define dropdown options for each node type
-                    node_type_options = {
-                        "Electric": ["15 Amp 110V AC", "20 Amp 110V AC", "30 Amp 208V AC"],
-                        "Data": ["BRINC RF Site 25 50", "BRINC Station 25 50", "BRINC Radar Site 10 10"],
-                        "RF": ["10 foot pole", "20 foot pole", "30 foot pole", "microsite", "Tower"],
-                        "Unistrut": ["3 Unistrut", "4 Unistrut"],
-                        "Lift": ["Crane", "Fire Department"]
-                    }
-
-                    # Placement mode selection
-                    placement_mode = st.radio("What to place:", ["📍 Node", "🖼️ Image"], horizontal=True, key=f"int_placement_mode_{selected_site['site_id']}")
-
-                    m_type = None
-                    m_label = None
-                    placement_image = None
-
-                    if "Node" in placement_mode:
-                        col_m1, col_m2 = st.columns(2)
-                        with col_m1:
-                            m_type = st.selectbox("Node Type", ["Electric", "Data", "RF", "Unistrut", "Lift"], key=f"int_mtype_{selected_site['site_id']}")
-                        with col_m2:
-                            # Get available labels for selected node type, default to first option
-                            available_labels = node_type_options.get(m_type, [""])
-                            default_label = available_labels[0] if available_labels else ""
-                            m_label = st.selectbox("Node Label", available_labels, key=f"int_mlabel_{selected_site['site_id']}")
-                    else:  # Image mode
-                        if available_images:
-                            placement_image = st.selectbox("Select Image to Place", available_images, key=f"int_placement_img_{selected_site['site_id']}")
-                        else:
-                            st.warning("No images available in the images directory.")
-                            placement_image = None
-
-                    # 2. Interactive Image coordinate placement
-                    st.markdown("🎯 **Click on the image below to place this node:**")
-
-                    # Create unique drawing path per image
-                    img_base_name = os.path.splitext(st.session_state.active_bg_image)[0]
-                    output_drawing_path = os.path.join(selected_site['folder_path'], f"engineering_layout_{img_base_name}.png")
-                    display_img_path = output_drawing_path if os.path.exists(output_drawing_path) else bg_display_path
-                    if not display_img_path:
-                        st.error(f"Cannot preview or annotate this image: {active_img_meta['filename']}")
-                        st.stop()
-
-                    # We show the image and capture click
-                    # Force full refresh by including image path in key
-                    canvas_key = f"canvas_{selected_site['site_id']}_{hash(st.session_state.active_bg_image)}"
-
-                    # Check image dimensions to preserve portrait orientation
-                    try:
-                        with Image.open(display_img_path) as img_check:
-                            img_width, img_height = img_check.size
-                        # Use height for portrait images (height > width), width for landscape
-                        # Constrain to max 600px to keep UI manageable
-                        if img_height > img_width:
-                            # Portrait orientation - use height constraint
-                            display_size = min(600, img_height)
-                            click = streamlit_image_coordinates(display_img_path, key=canvas_key, height=display_size)
-                        else:
-                            # Landscape or square - use width constraint
-                            display_size = min(600, img_width)
-                            click = streamlit_image_coordinates(display_img_path, key=canvas_key, width=display_size)
-                    except Exception:
-                        # Fallback to width-based display if dimension check fails
-                        click = streamlit_image_coordinates(display_img_path, key=canvas_key, width=600)
-
-                    if click:
-                        click_key = f"{selected_site['site_id']}_{st.session_state.active_bg_image}_{click.get('x')}_{click.get('y')}"
-                        if st.session_state.last_click.get(selected_site['site_id']) != click_key:
-                            st.session_state.last_click[selected_site['site_id']] = click_key
-
-                            click_x = click.get("x", 0)
-                            click_y = click.get("y", 0)
-
-                            try:
-                                with Image.open(display_img_path) as temp_img:
-                                    w, h = temp_img.size
-
-                                # Compute actual display dimensions matching the widget constraints
-                                if h > w:
-                                    # Portrait: height was constrained
-                                    display_h = min(600, h)
-                                    display_w = display_h * w / h
-                                else:
-                                    # Landscape or square: width was constrained
-                                    display_w = min(600, w)
-                                    display_h = display_w * h / w
-
-                                # Normalize click to 0..1 ratios against displayed dimensions
-                                ratio_x = click_x / display_w
-                                ratio_y = click_y / display_h
-
-                                is_drawing = os.path.exists(output_drawing_path)
-                                photo_width_ratio = 0.80 if is_drawing else 1.0
-
-                                if ratio_x <= photo_width_ratio:
-                                    if "Node" in placement_mode:
-                                        # Place Node
-                                        node_x_pct = (ratio_x / photo_width_ratio) * 100
-                                        node_y_pct = ratio_y * 100
-
-                                        label_x_pct = max(node_x_pct - 15, 5)
-                                        label_y_pct = max(node_y_pct - 8, 5)
-
-                                        selected_site['markers_by_image'][st.session_state.active_bg_image].append({
-                                            'type': m_type,
-                                            'label': m_label,
-                                            'node_x': node_x_pct,
-                                            'node_y': node_y_pct,
-                                            'label_x': label_x_pct,
-                                            'label_y': label_y_pct
-                                        })
-                                        success_msg = f"Added {m_label} Node!"
-                                    else:
-                                        # Place Image
-                                        img_x_pct = (ratio_x / photo_width_ratio) * 100
-                                        img_y_pct = ratio_y * 100
-
-                                        selected_site['image_placements_by_image'][st.session_state.active_bg_image].append({
-                                            'image_name': placement_image,
-                                            'x': img_x_pct,
-                                            'y': img_y_pct
-                                        })
-                                        success_msg = f"Added {placement_image}!"
-
-                                    # Auto-compile drawing in background
-                                    reporter.create_engineering_drawing(
-                                        bg_display_path or bg_path,
-                                        output_drawing_path,
-                                        selected_site['markers_by_image'][st.session_state.active_bg_image],
-                                        selected_site['eng_note'],
-                                        address=selected_site['address'],
-                                        image_placements=selected_site['image_placements_by_image'][st.session_state.active_bg_image],
-                                        images_dir=images_dir
-                                    )
-                                    # Save meta session
-                                    _save_session_metadata(st.session_state.processed_sites)
-                                    st.success(success_msg)
-                                    st.rerun()
-                            except Exception as e:
-                                st.error(f"Error registering click: {e}")
-
-                    # Marker list with individual delete buttons
-                    current_markers = selected_site['markers_by_image'].get(st.session_state.active_bg_image, [])
-                    if current_markers:
-                        st.markdown("**Placed Markers:**")
-                        color_emoji = {
-                            'Electric': '🔴',
-                            'Data': '🟠',
-                            'RF': '🟣',
-                            'Unistrut': '⚪',
-                            'Lift': '🟡',
-                        }
-                        for idx, marker in enumerate(current_markers):
-                            mcol1, mcol2 = st.columns([3, 1])
-                            with mcol1:
-                                emoji = color_emoji.get(marker.get('type', ''), '⚫')
-                                st.markdown(f"{emoji} **{marker.get('type', '')}** — {marker.get('label', '')}")
-                            with mcol2:
-                                if st.button("✕ Remove", key=f"del_marker_{selected_site['site_id']}_{st.session_state.active_bg_image}_{idx}"):
-                                    selected_site['markers_by_image'][st.session_state.active_bg_image].pop(idx)
-                                    # Re-render drawing
-                                    if selected_site['markers_by_image'][st.session_state.active_bg_image]:
-                                        reporter.create_engineering_drawing(
-                                            bg_display_path or bg_path,
-                                            output_drawing_path,
-                                            selected_site['markers_by_image'][st.session_state.active_bg_image],
-                                            selected_site['eng_note'],
-                                            address=selected_site['address'],
-                                            image_placements=selected_site['image_placements_by_image'].get(st.session_state.active_bg_image, []),
-                                            images_dir=images_dir
-                                        )
-                                    elif os.path.exists(output_drawing_path):
-                                        os.remove(output_drawing_path)
-                                    _save_session_metadata(st.session_state.processed_sites)
-                                    st.rerun()
-                    else:
-                        st.caption("No markers placed yet.")
-
-                    # Action Buttons
-                    col_btn1, col_btn2 = st.columns(2)
-                    with col_btn1:
-                        selected_site['eng_note'] = st.text_area("Engineer's Notes Text", value=selected_site['eng_note'], key=f"int_engnote_{selected_site['site_id']}")
-                    with col_btn2:
-                        st.markdown("<br>", unsafe_allow_html=True)
-                        if st.button("🗑️ Clear All Placements", key=f"int_clearnode_{selected_site['site_id']}", width="stretch"):
-                            selected_site['markers_by_image'][st.session_state.active_bg_image] = []
-                            selected_site['image_placements_by_image'][st.session_state.active_bg_image] = []
-                            if os.path.exists(output_drawing_path):
-                                os.remove(output_drawing_path)
-                            _save_session_metadata(st.session_state.processed_sites)
-                            st.warning("Cleared all nodes and images for this photo.")
-                            st.rerun()
-
-                        if st.button("🔄 Refresh Rendering", key=f"int_redraw_{selected_site['site_id']}", width="stretch"):
-                            reporter.create_engineering_drawing(
-                                bg_display_path or bg_path,
-                                output_drawing_path,
-                                selected_site['markers_by_image'][st.session_state.active_bg_image],
-                                selected_site['eng_note'],
-                                address=selected_site['address'],
-                                image_placements=selected_site['image_placements_by_image'][st.session_state.active_bg_image],
-                                images_dir=images_dir
-                            )
-                            _save_session_metadata(st.session_state.processed_sites)
-                            st.rerun()
-
-                    # Show drawing preview below buttons if it exists
-                    if os.path.exists(output_drawing_path):
-                        st.image(output_drawing_path, caption="Active Engineering Markup Layout Preview", width="stretch")
-            else:
-                st.warning("Please upload or process images first to mark up.")
-                
-            # ── Candidate Site Checklists ──
             if st.session_state.candidate_sites:
                 st.markdown("---")
                 st.subheader("Site Assessment Checklists")
                 for i, csite in enumerate(st.session_state.candidate_sites, start=1):
                     _render_site_checklist(csite, i)
-
-            # Report generation & Drive upload — single combined action
+            # Report generation & Drive upload â€” single combined action
             st.subheader("Report Generation & Upload")
+            with st.expander("Report Contact Preview", expanded=False):
+                preview_rows = _report_contact_preview_rows()
+                preview_df = pd.DataFrame(preview_rows, columns=["Field", "Value"])
+                st.dataframe(preview_df, use_container_width=True, hide_index=True)
+                st.caption("This preview mirrors the report import fields before export.")
             report_name = st.text_input("Master Document Name", value=_default_master_document_name())
             use_new_report = st.checkbox(
                 "Use enhanced multi-site report format",
@@ -1856,7 +1922,7 @@ with tab1:
                 if st.session_state.get("generated_report"):
                     st.success(f"Generated report: `{st.session_state.generated_report}`")
 
-            # Persistent export buttons — survive reruns
+            # Persistent export buttons â€” survive reruns
             if st.session_state.get("generated_report") and st.session_state.candidate_sites:
                 report_path = st.session_state.generated_report
                 if os.path.exists(report_path):
@@ -1890,55 +1956,27 @@ with tab1:
         else:
             st.info("No sites loaded. Run the ingestion step first.")
 
-    with col3:
-        st.subheader("Previous Sessions")
-        resolved_output_dir = _resolve_app_path(output_dir)
-        if os.path.exists(resolved_output_dir):
-            subdirs = [d for d in os.listdir(resolved_output_dir) if os.path.isdir(os.path.join(resolved_output_dir, d)) and d != "__pycache__" and d != "Unclassified_No_GPS"]
-            if subdirs:
-                for d in sorted(subdirs):
-                    # Try to load the actual agency name from metadata first
-                    meta_file = os.path.join(resolved_output_dir, d, "session_metadata.json")
-                    display_name = None
-
-                    if os.path.exists(meta_file):
-                        try:
-                            with open(meta_file, "r") as mf:
-                                loaded_metadata = json.load(mf)
-                            # Use the agency name from customer_info if available
-                            if "customer_info" in loaded_metadata and loaded_metadata["customer_info"].get("agency_name"):
-                                display_name = loaded_metadata["customer_info"]["agency_name"]
-                        except Exception:
-                            pass
-
-                    # Fallback to parsing folder name if metadata lookup failed
-                    if not display_name:
-                        display_name = d.replace("Site_1_", "").replace("Site_2_", "").replace("Site_3_", "").replace("_", " ").replace("Site-001", "").replace("Site-002", "")
-                        if "Lansing" in display_name:
-                            display_name = "Lansing Illinois Police"
-
-                    if st.button(display_name, key=f"prev_sess_btn_{d}", width="stretch"):
-                        if os.path.exists(meta_file):
-                            try:
-                                with open(meta_file, "r") as mf:
-                                    loaded_site = json.load(mf)
-                                st.session_state.processed_sites = [loaded_site]
-                                if loaded_site.get("images"):
-                                    st.session_state.active_bg_image = loaded_site["images"][0]["filename"]
-                                if "customer_info" in loaded_site:
-                                    st.session_state.customer_info = loaded_site["customer_info"]
-                                st.success(f"Loaded session for {display_name}")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Failed to load session: {e}")
-                        else:
-                            st.warning("No session_metadata.json found.")
-            else:
-                st.caption("No previous sessions found.")
-        else:
-            st.caption("No output directory found.")
-
 with tab2:
+    st.subheader("Annotator Workspace")
+    st.write("Use this tab for full-width photo markup.")
+    if st.session_state.processed_sites:
+        def _annotator_site_label(idx):
+            site = st.session_state.processed_sites[idx]
+            return f"{site['site_id']}: {reporter._format_short_address(site['address'])}"
+
+        selected_idx = st.selectbox(
+            "Select Site to Annotate",
+            range(len(st.session_state.processed_sites)),
+            format_func=_annotator_site_label,
+            key="annotator_site_select",
+        )
+        st.session_state["selected_site_idx"] = selected_idx
+        selected_site = st.session_state.processed_sites[selected_idx]
+        _render_annotator_workspace(selected_site)
+    else:
+        st.info("No sites loaded. Run the ingestion step first.")
+
+with tab3:
     st.subheader("Cloud Workflow Orchestration")
     st.write("Connect survey findings to CRM, task tracking, calendar scheduler, and communications.")
     
@@ -1961,7 +1999,7 @@ with tab2:
                 if hs_results["status"] == "connected":
                     co_count = len(hs_results["companies"])
                     deal_count = len(hs_results["deals"])
-                    st.session_state.integration_logs.append(
+                    _append_integration_log(
                         f"[HubSpot API] Found {co_count} companies, {deal_count} deals for {agency}"
                     )
                     st.success(f"Found {co_count} companies and {deal_count} deals.")
@@ -1973,12 +2011,12 @@ with tab2:
                     st.info("No HubSpot records found for this agency.")
             
         if st.button("📅 Schedule Kickoff Meeting (Google Calendar)", key="cal_sync_tab2", width="stretch"):
-            st.session_state.integration_logs.append("[Google Calendar API] POST /events - Scheduled Kickoff for Lansing PD")
+            _append_integration_log("[Google Calendar API] POST /events - Scheduled Kickoff for Lansing PD")
             st.success("Meeting Scheduled & Invites sent to stakeholders.")
 
         if st.button("☁️ Sync Report to Google Drive", key="drive_sync_tab2", width="stretch"):
             if hasattr(st.session_state, 'generated_report'):
-                st.session_state.integration_logs.append(f"[Google Drive API] POST /files - Uploaded '{os.path.basename(st.session_state.generated_report)}'")
+                _append_integration_log(f"[Google Drive API] POST /files - Uploaded '{os.path.basename(st.session_state.generated_report)}'")
                 st.success("Report synchronized to cloud storage.")
             else:
                 st.warning("Generate the Word report first on the Survey Pipeline tab.")
@@ -2001,7 +2039,7 @@ with tab2:
                     st.session_state["jira_results"] = jira_results
                 if jira_results["status"] == "connected":
                     count = len(jira_results["tickets"])
-                    st.session_state.integration_logs.append(
+                    _append_integration_log(
                         f"[Jira API] Found {count} tickets for {agency}"
                     )
                     st.success(f"Found {count} Jira tickets.")
@@ -2013,13 +2051,14 @@ with tab2:
                     st.info("No Jira tickets found for this agency.")
             
         if st.button("💬 Send Project Status to Slack", key="slack_sync_tab2", width="stretch"):
-            st.session_state.integration_logs.append("[Slack Webhook] POST /hooks - Posted Lansing PD survey status")
+            _append_integration_log("[Slack Webhook] POST /hooks - Posted Lansing PD survey status")
             st.success("Notification broadcasted to Slack channels.")
 
-with tab3:
+with tab4:
     st.subheader("Execution & Integration Logs")
     if st.session_state.integration_logs:
         for log in st.session_state.integration_logs:
-            st.text(log)
+            st.text(_format_integration_log(log))
     else:
         st.write("No integration steps executed yet.")
+

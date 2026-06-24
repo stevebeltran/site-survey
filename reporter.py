@@ -8,8 +8,11 @@ import zipfile
 from xml.sax.saxutils import escape as xml_escape
 import requests
 from docx import Document
+from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from geopy.distance import geodesic
 from PIL import Image, ImageDraw, ImageFont
 
@@ -165,6 +168,68 @@ def _add_report_footer(doc):
             run.add_picture(logo_path, width=Inches(1.25))
     except Exception:
         pass
+
+
+def _set_cell_shading(cell, fill):
+    tc_pr = cell._tc.get_or_add_tcPr()
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:fill"), fill)
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    tc_pr.append(shd)
+
+
+def _set_cell_margins(cell, top=90, start=120, bottom=90, end=120):
+    tc_pr = cell._tc.get_or_add_tcPr()
+    tc_mar = tc_pr.first_child_found_in("w:tcMar")
+    if tc_mar is None:
+        tc_mar = OxmlElement("w:tcMar")
+        tc_pr.append(tc_mar)
+    for edge, value in (("top", top), ("start", start), ("bottom", bottom), ("end", end)):
+        node = tc_mar.find(qn(f"w:{edge}"))
+        if node is None:
+            node = OxmlElement(f"w:{edge}")
+            tc_mar.append(node)
+        node.set(qn("w:w"), str(value))
+        node.set(qn("w:type"), "dxa")
+
+
+def _set_table_column_widths(table, widths):
+    table.autofit = False
+    for row in table.rows:
+        for idx, width in enumerate(widths):
+            row.cells[idx].width = width
+
+
+def _style_table_cell(cell, *, bold=False, font_size=10, color=None, align=None):
+    for paragraph in cell.paragraphs:
+        if align is not None:
+            paragraph.alignment = align
+        paragraph.paragraph_format.space_before = Pt(0)
+        paragraph.paragraph_format.space_after = Pt(0)
+        paragraph.paragraph_format.line_spacing = 1.0
+        for run in paragraph.runs:
+            run.font.name = "Aptos"
+            run.font.size = Pt(font_size)
+            run.font.bold = bold
+            if color is not None:
+                run.font.color.rgb = color
+    cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+    _set_cell_margins(cell)
+
+
+def _style_polished_table(table, *, widths, header_fill="1F4E79", label_fill="D9E8FB", body_fill="FFFFFF"):
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    _set_table_column_widths(table, widths)
+    for row_idx, row in enumerate(table.rows):
+        for col_idx, cell in enumerate(row.cells):
+            _set_cell_shading(cell, header_fill if row_idx == 0 else (label_fill if col_idx == 0 else body_fill))
+            if row_idx == 0:
+                _style_table_cell(cell, bold=True, font_size=10, color=RGBColor(255, 255, 255), align=WD_ALIGN_PARAGRAPH.CENTER)
+            elif col_idx == 0:
+                _style_table_cell(cell, bold=True, font_size=10, color=RGBColor(0, 0, 0), align=WD_ALIGN_PARAGRAPH.LEFT)
+            else:
+                _style_table_cell(cell, bold=False, font_size=10, color=RGBColor(0, 0, 0), align=WD_ALIGN_PARAGRAPH.LEFT)
 
 
 def export_sites_kmz(site_data_list, output_filepath, candidate_sites=None, ring_radius_miles=2.0):
@@ -894,7 +959,7 @@ def create_engineering_drawing(bg_path, output_path, markers, engineer_note, add
 
 def add_styled_table(doc, data, headers):
     """
-    Construct a clean, well-padded Table styled matching LANSING_PD_Site_Survey.
+    Construct a clean, polished table with a strong header row and a highlighted label column.
     Supports 2 or 3 columns depending on len(headers).
     """
     ncols = len(headers)
@@ -903,52 +968,120 @@ def add_styled_table(doc, data, headers):
 
     hdr_cells = table.rows[0].cells
     for i, h in enumerate(headers):
-        hdr_cells[i].text = h
-
-    for i in range(ncols):
-        hdr_cells[i].paragraphs[0].runs[0].font.bold = True
-        hdr_cells[i].paragraphs[0].runs[0].font.color.rgb = RGBColor(255, 255, 255)
+        hdr_cells[i].text = str(h)
 
     for r_idx, row in enumerate(data):
         row_cells = table.rows[r_idx + 1].cells
         for c_idx, cell_val in enumerate(row):
             row_cells[c_idx].text = str(cell_val)
-        row_cells[0].paragraphs[0].runs[0].font.bold = True
 
+    if ncols == 2:
+        widths = [Inches(2.25), Inches(4.25)]
+    elif ncols == 3:
+        widths = [Inches(2.20), Inches(3.00), Inches(1.30)]
+    else:
+        widths = [Inches(6.5 / ncols)] * ncols
+    _style_polished_table(table, widths=widths)
     doc.add_paragraph()
 
+
+def _get_contact_value(customer_info, key, default="DNA"):
+    value = ""
+    if customer_info:
+        value = customer_info.get(key, "")
+    return value if value not in ("", None) else default
+
+
+def _format_contact_block(*parts):
+    lines = [str(part).strip() for part in parts if part not in ("", None)]
+    return "\n".join(lines) if lines else "DNA"
+
+
+def _find_contact_row(customer_info, role_name):
+    """Return the first structured contact row matching a role name."""
+    for row in (customer_info or {}).get("contacts", []):
+        if str(row.get("role", "")).strip().lower() == role_name.strip().lower():
+            return row
+    return {}
+
+
+def _format_role_contact(customer_info, role_name, name_key, email_key, phone_key=None, default="DNA"):
+    """Prefer structured contact rows, then flat legacy keys, then DNA."""
+    customer_info = customer_info or {}
+    contact = _find_contact_row(customer_info, role_name)
+    name = (contact.get("name") or customer_info.get(name_key) or "").strip()
+    email = (contact.get("email") or customer_info.get(email_key) or "").strip()
+    phone = ""
+    if phone_key:
+        phone = (contact.get("phone") or customer_info.get(phone_key) or "").strip()
+
+    lines = [value for value in (name, email, phone) if value]
+    return "\n".join(lines) if lines else default
+
+
+def _format_scalar_contact(customer_info, key, default="DNA"):
+    """Return a single-line scalar contact value from the structured or legacy payload."""
+    customer_info = customer_info or {}
+    value = str(customer_info.get(key, "") or "").strip()
+    if not value:
+        for row in customer_info.get("contacts", []):
+            if str(row.get("role", "")).strip().lower() == key.replace("_", " ").lower():
+                value = str(row.get("name", "") or "").strip()
+                break
+    return value if value else default
+
+
 def _add_poc_table(doc, customer_info):
-    """Build a 5-column Points of Contact table from customer_info['contacts'] or legacy fields."""
-    contacts = (customer_info or {}).get("contacts") or []
-
-    if not contacts and customer_info:
-        # Derive rows from legacy flat fields so old data still renders
-        def _row(role, name, title, email, phone=""):
-            return {"role": role, "name": name, "title": title, "email": email, "phone": phone}
-
-        poc = customer_info.get("poc_name", "")
-        if poc:
-            contacts.append(_row("", poc, "", customer_info.get("poc_email", ""), customer_info.get("poc_phone", "")))
-        it = customer_info.get("it_director", "")
-        if it:
-            contacts.append(_row("", it, "IT Director", customer_info.get("it_email", "")))
-        fac = customer_info.get("facilities_engineer", "")
-        if fac:
-            contacts.append(_row("", fac, "Facilities Engineer", customer_info.get("facilities_email", "")))
-        rtcc = customer_info.get("rtcc_name", "")
-        if rtcc and rtcc != "DNA":
-            contacts.append(_row("RTCC/RTIC", rtcc, "", customer_info.get("rtcc_email", "")))
-        pm = customer_info.get("brinc_pm", "")
-        if pm:
-            contacts.append(_row("BRINC Project Manager", pm, "", ""))
+    """Build a polished 2-column general information table that mirrors the reference document."""
+    customer_info = customer_info or {}
 
     h = doc.add_paragraph()
-    h.add_run("POINTS OF CONTACT").bold = True
-    h.runs[0].font.size = Pt(12)
+    h.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    h_run = h.add_run("GENERAL")
+    h_run.bold = True
+    h_run.font.name = "Aptos"
+    h_run.font.size = Pt(22)
+    h_run.font.color.rgb = RGBColor(0, 0, 0)
 
-    data = [(c.get("role", ""), c.get("name", ""), c.get("title", ""),
-             c.get("email", ""), c.get("phone", "")) for c in contacts]
-    add_styled_table(doc, data, ["Role", "Name", "Title / Rank", "Email", "Phone"])
+    rows = [
+        ("Agency Name\nAgency Address", _format_contact_block(
+            _get_contact_value(customer_info, "agency_name", ""),
+            _get_contact_value(customer_info, "agency_address", ""),
+        )),
+        ("Point of Contact\n(Name, E-Mail, Phone #)", _format_contact_block(
+            _get_contact_value(customer_info, "poc_name", ""),
+            _get_contact_value(customer_info, "poc_email", ""),
+            _get_contact_value(customer_info, "poc_phone", ""),
+        )),
+        ("RTCC/RTIC\n(Name, E-Mail, Phone #)", _format_contact_block(
+            *_format_role_contact(customer_info, "RTCC", "rtcc_name", "rtcc_email", "rtcc_phone").split("\n")
+        )),
+        ("Information Technology\n(Name, E-Mail, Phone #)", _format_contact_block(
+            *_format_role_contact(customer_info, "IT", "it_director", "it_email", "it_phone").split("\n")
+        )),
+        ("Facilities Engineer\n(Name, E-Mail, Phone #)", _format_contact_block(
+            *_format_role_contact(customer_info, "Facilities", "facilities_engineer", "facilities_email", "facilities_phone").split("\n")
+        )),
+        ("Radio Shop Engineer\n(Name, E-Mail, Phone #)", _format_contact_block(
+            *_format_role_contact(customer_info, "Radio Shop", "radio_shop_name", "radio_shop_email", "radio_shop_phone").split("\n")
+        )),
+        ("Crane Contractor", _format_scalar_contact(customer_info, "crane_contractor", "DNA")),
+        ("Tower Climber Contractor", _format_scalar_contact(customer_info, "tower_climber_contractor", "DNA")),
+        ("BRINC Project Manager", _format_scalar_contact(customer_info, "brinc_pm", "DNA")),
+    ]
+
+    table = doc.add_table(rows=len(rows), cols=2)
+    for row_idx, (label, value) in enumerate(rows):
+        table.rows[row_idx].cells[0].text = label
+        table.rows[row_idx].cells[1].text = value
+
+    _style_polished_table(table, widths=[Inches(2.55), Inches(4.0)], header_fill="FFFFFF")
+    for row in table.rows:
+        _set_cell_shading(row.cells[0], "C7D9F1")
+        _set_cell_shading(row.cells[1], "FFFFFF")
+        _style_table_cell(row.cells[0], bold=False, font_size=11, color=RGBColor(0, 0, 0), align=WD_ALIGN_PARAGRAPH.LEFT)
+        _style_table_cell(row.cells[1], bold=False, font_size=11, color=RGBColor(0, 0, 0), align=WD_ALIGN_PARAGRAPH.LEFT)
+    doc.add_paragraph()
 
 
 def generate_word_report(site_data_list, output_filepath, customer_info=None, drive_manager=None, drive_reports_folder_id=None, progress_callback=None):
@@ -972,7 +1105,7 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
 
     style = doc.styles['Normal']
     font = style.font
-    font.name = 'Arial'
+    font.name = 'Aptos'
     font.size = Pt(10)
 
     if not customer_info:
@@ -999,8 +1132,9 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
     p_title.alignment = 1
     title_run = p_title.add_run("DFR SITE SURVEY REPORT")
     title_run.bold = True
-    title_run.font.size = Pt(24)
-    title_run.font.color.rgb = RGBColor(0, 48, 96)
+    title_run.font.name = "Aptos Display"
+    title_run.font.size = Pt(26)
+    title_run.font.color.rgb = RGBColor(29, 59, 103)
     
     p_agency = doc.add_paragraph()
     p_agency.alignment = 1
@@ -1009,8 +1143,9 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
         f"Survey Date: {report_date}\n"
         f"Surveyor: {surveyor}"
     )
-    agency_run.font.size = Pt(14)
-    agency_run.font.color.rgb = RGBColor(100, 100, 100)
+    agency_run.font.name = "Aptos"
+    agency_run.font.size = Pt(15)
+    agency_run.font.color.rgb = RGBColor(98, 98, 98)
     
     # 1. Map Visualisation Section
     _progress("Generating site map visualization...")
@@ -1022,6 +1157,7 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
         doc.add_paragraph()
         
     # 2. Points of Contact Table
+    doc.add_page_break()
     _add_poc_table(doc, customer_info)
 
     # 3. Installation Timeframe
