@@ -199,6 +199,80 @@ class GoogleDriveManager:
 
         return results.get('files', [])
 
+    def search_department_documents(self, dept_name, dept_domain):
+        """Search Google Drive for documents matching department name or domain.
+
+        Searches by two criteria:
+        1. Department name in filename (fuzzy match >= 80% similarity)
+        2. Document shared with any email from department domain
+
+        Args:
+            dept_name: Department name (e.g. "West Memphis Police")
+            dept_domain: Department domain (e.g. "memphispd.gov")
+
+        Returns:
+            List of document dicts with keys: name, owner, last_modified, url
+            Up to 20 documents per query, deduplicated by file ID
+        """
+        from fuzzywuzzy import fuzz
+
+        results_by_id = {}
+
+        try:
+            # Query 1: Search by department name in filename
+            try:
+                query = f"fullText contains '{dept_name}' and trashed=false"
+                files = self.search_files(query, max_results=20)
+                for f in files:
+                    file_id = f.get('id')
+                    # Fuzzy match filename against department name
+                    similarity = fuzz.token_set_ratio(f.get('name', '').lower(), dept_name.lower())
+                    if similarity >= 80:
+                        results_by_id[file_id] = f
+            except Exception as e:
+                print(f"Error searching by department name '{dept_name}': {e}")
+
+            # Query 2: Search shared documents and filter by domain
+            try:
+                query = f"sharedWithMe and trashed=false"
+                shared_files = self.search_files(query, max_results=20)
+                for f in shared_files:
+                    file_id = f.get('id')
+                    # Check if document is shared with dept_domain
+                    try:
+                        perms = self.service.permissions().list(
+                            fileId=file_id,
+                            fields='permissions(emailAddress, type)',
+                            supportsAllDrives=True
+                        ).execute()
+                        for perm in perms.get('permissions', []):
+                            email = perm.get('emailAddress', '').lower()
+                            if email.endswith(f'@{dept_domain.lower()}'):
+                                results_by_id[file_id] = f
+                                break
+                    except Exception as e:
+                        print(f"Error checking permissions for file {file_id}: {e}")
+            except Exception as e:
+                print(f"Error searching shared documents: {e}")
+
+            # Format results
+            formatted_results = []
+            for file_id, f in results_by_id.items():
+                owners = f.get('owners', [])
+                owner = owners[0].get('displayName', 'Unknown') if owners else 'Unknown'
+                formatted_results.append({
+                    'name': f.get('name', ''),
+                    'owner': owner,
+                    'last_modified': f.get('modifiedTime', ''),
+                    'url': f.get('webViewLink', '')
+                })
+
+            return formatted_results
+
+        except Exception as e:
+            print(f"Error in search_department_documents: {e}")
+            return []
+
     def list_files(self, folder_id, file_type='all'):
         """
         List files in folder.
