@@ -10,6 +10,7 @@ import datetime
 from zoneinfo import ZoneInfo
 from google_drive import get_drive_manager
 from gmail_lookup import search_gmail_for_contacts
+from agency_docs import fetch_agency_docs_parallel
 import google_oauth
 
 try:
@@ -273,6 +274,16 @@ if "jira_results" not in st.session_state:
     st.session_state.jira_results = {}
 if "hubspot_results" not in st.session_state:
     st.session_state.hubspot_results = {}
+if "agency_contacts" not in st.session_state:
+    st.session_state.agency_contacts = []
+if "agency_docs" not in st.session_state:
+    st.session_state.agency_docs = []
+if "agency_calendar" not in st.session_state:
+    st.session_state.agency_calendar = []
+if "agency_docs_loading" not in st.session_state:
+    st.session_state.agency_docs_loading = False
+if "agency_docs_errors" not in st.session_state:
+    st.session_state.agency_docs_errors = {}
 
 SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tiff", ".webp", ".heic", ".heif")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -642,7 +653,7 @@ def _render_kpi_cards():
         for key in ("drive_gemini_results", "jira_results", "hubspot_results", "calendar_results")
         if st.session_state.get(key, {}).get("status") in ("connected",)
     )
-    contacts_count = len(st.session_state.customer_info.get("contacts", []))
+    contacts_count = len(st.session_state.customer_info.get("contacts", [])) + len(st.session_state.agency_contacts)
     cols = st.columns(4)
     metrics = [
         ("Loaded Sites", overview["sites"], None),
@@ -996,6 +1007,28 @@ def _render_survey_upload_block(current_proximity_radius: int, compact: bool = F
                             break
                     else:
                         st.session_state.gps_detected_agency = {}
+
+            # Trigger parallel agency docs lookup if GPS set department_name and we haven't fetched yet
+            agency_name = st.session_state.customer_info.get("agency_name", "").strip()
+            if agency_name and not st.session_state.agency_contacts:
+                st.session_state.agency_docs_loading = True
+                try:
+                    # Extract domain from agency address or leave empty
+                    agency_address = st.session_state.customer_info.get("agency_address", "")
+                    dept_domain = ""  # Can be extracted from address in future iterations
+
+                    # Call parallel fetch in blocking context (will complete before rerun)
+                    result = fetch_agency_docs_parallel(agency_name, dept_domain, st.session_state)
+
+                    # Store results atomically
+                    st.session_state.agency_contacts = result.get("contacts", [])
+                    st.session_state.agency_docs = result.get("docs", [])
+                    st.session_state.agency_calendar = result.get("events", [])
+                    st.session_state.agency_docs_errors = result.get("errors", {})
+                except Exception as e:
+                    st.session_state.agency_docs_errors["fetch"] = str(e)
+                finally:
+                    st.session_state.agency_docs_loading = False
 
             suggested_name = st.session_state.get("gps_detected_agency", {}).get("agency_name", "")
             client_name = st.text_input(

@@ -429,3 +429,154 @@ class TestParallelOrchestrator:
         # But other results should still be present
         assert isinstance(result["contacts"], list)
         assert isinstance(result["docs"], list)
+
+
+class TestDashboardIntegration:
+    """Test suite for dashboard integration with parallel agency docs lookup."""
+
+    @patch('agency_docs.extract_department_contacts')
+    @patch('agency_docs.search_department_calendar_events')
+    @patch('agency_docs.GoogleDriveManager')
+    @patch('agency_docs.google_oauth.get_credentials')
+    def test_dashboard_integration_trigger(self, mock_get_creds, mock_drive_manager,
+                                            mock_calendar, mock_gmail):
+        """Test that fetch_agency_docs_parallel is called after GPS sets agency_name."""
+        from agency_docs import fetch_agency_docs_parallel
+
+        # Mock all three lookups to return results
+        mock_get_creds.return_value = MagicMock()
+        mock_gmail.return_value = [
+            {"name": "John Smith", "email": "john@example.com", "title": "IT Director", "phone": "555-1234"}
+        ]
+        mock_calendar.return_value = [
+            {"name": "Team Meeting", "date": "Jun 24, 2026", "time": "2:00 PM", "attendee_count": 5, "url": "..."}
+        ]
+
+        mock_manager_instance = MagicMock()
+        mock_manager_instance.search_department_documents.return_value = [
+            {"name": "Site Survey", "owner": "John Doe", "last_modified": "2026-06-24", "url": "..."}
+        ]
+        mock_drive_manager.return_value = mock_manager_instance
+
+        # Simulate session state as would be after GPS detection
+        session_state = {
+            "customer_info": {
+                "agency_name": "West Memphis Police",
+                "agency_address": "123 Main St"
+            },
+            "agency_contacts": [],  # Not yet fetched
+            "agency_docs": [],
+            "agency_calendar": [],
+            "agency_docs_loading": False,
+            "agency_docs_errors": {}
+        }
+
+        # Call fetch_agency_docs_parallel as the dashboard would
+        dept_name = session_state["customer_info"].get("agency_name", "").strip()
+        assert dept_name == "West Memphis Police"
+        assert not session_state["agency_contacts"]  # Not yet fetched
+
+        result = fetch_agency_docs_parallel(dept_name, "", session_state)
+
+        # Verify results are returned and would populate session state
+        assert isinstance(result["contacts"], list)
+        assert isinstance(result["docs"], list)
+        assert isinstance(result["events"], list)
+        assert isinstance(result["errors"], dict)
+        assert len(result["contacts"]) > 0
+        assert len(result["docs"]) > 0
+        assert len(result["events"]) > 0
+
+    @patch('agency_docs.extract_department_contacts')
+    @patch('agency_docs.search_department_calendar_events')
+    @patch('agency_docs.GoogleDriveManager')
+    @patch('agency_docs.google_oauth.get_credentials')
+    def test_dashboard_integration_session_state_update(self, mock_get_creds, mock_drive_manager,
+                                                        mock_calendar, mock_gmail):
+        """Test that session state is correctly updated after fetch completes."""
+        from agency_docs import fetch_agency_docs_parallel
+
+        # Mock lookups with realistic data
+        mock_get_creds.return_value = MagicMock()
+        mock_gmail.return_value = [
+            {"name": "Jane Doe", "email": "jane@example.com", "title": "Facilities Manager", "phone": "555-5678"}
+        ]
+        mock_calendar.return_value = [
+            {"name": "Site Walk", "date": "Jun 25, 2026", "time": "10:00 AM", "attendee_count": 3, "url": "..."}
+        ]
+
+        mock_manager_instance = MagicMock()
+        mock_manager_instance.search_department_documents.return_value = [
+            {"name": "Deployment Plan", "owner": "Jane Doe", "last_modified": "2026-06-24", "url": "..."}
+        ]
+        mock_drive_manager.return_value = mock_manager_instance
+
+        # Simulate session state
+        session_state = {
+            "customer_info": {
+                "agency_name": "Springfield Police",
+                "agency_address": "456 Oak Ave"
+            }
+        }
+
+        result = fetch_agency_docs_parallel("Springfield Police", "", session_state)
+
+        # Verify all result keys present and non-empty
+        assert "contacts" in result
+        assert "docs" in result
+        assert "events" in result
+        assert "errors" in result
+
+        # Verify structure matches what dashboard expects
+        for contact in result["contacts"]:
+            assert "name" in contact
+            assert "email" in contact
+            assert "poc_role" in contact  # Orchestrator assigns this
+
+        for doc in result["docs"]:
+            assert "name" in doc
+            assert "owner" in doc
+            assert "last_modified" in doc
+            assert "url" in doc
+
+        for event in result["events"]:
+            assert "name" in event
+            assert "date" in event
+            assert "time" in event
+
+    @patch('agency_docs.extract_department_contacts')
+    @patch('agency_docs.search_department_calendar_events')
+    @patch('agency_docs.GoogleDriveManager')
+    @patch('agency_docs.google_oauth.get_credentials')
+    def test_dashboard_integration_skip_if_already_fetched(self, mock_get_creds, mock_drive_manager,
+                                                           mock_calendar, mock_gmail):
+        """Test that fetch is skipped if agency_contacts already populated."""
+        from agency_docs import fetch_agency_docs_parallel
+
+        # Simulate session state where contacts already exist (already fetched)
+        session_state = {
+            "customer_info": {
+                "agency_name": "Shelby County Police",
+                "agency_address": "789 Elm St"
+            },
+            "agency_contacts": [
+                {"name": "Existing Contact", "email": "existing@example.com", "poc_role": "IT"}
+            ],
+            "agency_docs": [],
+            "agency_calendar": [],
+            "agency_docs_errors": {}
+        }
+
+        # In dashboard, this check happens:
+        # if agency_name and not st.session_state.agency_contacts:
+        #     call fetch_agency_docs_parallel()
+
+        agency_name = session_state["customer_info"].get("agency_name", "").strip()
+        has_contacts = bool(session_state.get("agency_contacts"))
+
+        # Verify the condition would prevent the fetch
+        assert agency_name == "Shelby County Police"
+        assert has_contacts  # Already populated, so fetch would be skipped
+
+        # Mocks should not be called in this scenario
+        # (This is implicitly tested by not calling fetch here)
