@@ -126,9 +126,12 @@ class PipelineTests(unittest.TestCase):
             source_dir.mkdir()
 
             old_image = source_dir / "old_site.jpg"
-            new_image = source_dir / "new_upload.jpg"
+            new_images = []
             Image.new("RGB", (100, 100), color="red").save(old_image)
-            Image.new("RGB", (100, 100), color="blue").save(new_image)
+            for idx in range(5):
+                image_path = source_dir / f"new_upload_{idx + 1}.jpg"
+                Image.new("RGB", (100, 100), color="blue").save(image_path)
+                new_images.append(image_path)
 
             original_extract = processor.extract_exif_gps
             original_reverse_geocode = processor.reverse_geocode
@@ -143,7 +146,7 @@ class PipelineTests(unittest.TestCase):
                 site_data = processor.process_and_organize_images(
                     str(source_dir),
                     str(output_dir),
-                    image_paths=[str(new_image)],
+                    image_paths=[str(path) for path in new_images],
                 )
             finally:
                 processor.extract_exif_gps = original_extract
@@ -154,7 +157,7 @@ class PipelineTests(unittest.TestCase):
                 for site in site_data
                 for img in site.get("images", [])
             ]
-            self.assertEqual(processed_filenames, ["new_upload.jpg"])
+            self.assertEqual(sorted(processed_filenames), [f"new_upload_{idx}.jpg" for idx in range(1, 6)])
             self.assertFalse(any(output_dir.rglob("old_site.jpg")))
 
     def test_create_engineering_drawing_writes_output(self):

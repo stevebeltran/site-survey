@@ -2,11 +2,11 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
-from processor import cluster_images_dbscan, split_clusters_by_time_gap
+from processor import cluster_images, split_clusters_by_time_gap
 from site_model import CandidateSite
 
 
-class TestDBSCANClustering:
+class TestRadiusClustering:
     def test_two_distinct_clusters(self):
         """Photos at two locations ~500m apart should form 2 clusters."""
         images = [
@@ -15,7 +15,7 @@ class TestDBSCANClustering:
             {"path": "b1.jpg", "lat": 41.867000, "lon": -87.665000, "time": None},
             {"path": "b2.jpg", "lat": 41.867050, "lon": -87.665050, "time": None},
         ]
-        clusters = cluster_images_dbscan(images)
+        clusters = cluster_images(images, radius_meters=90.0)
         assert len(clusters) == 2
         cluster_sizes = sorted([len(c) for c in clusters])
         assert cluster_sizes == [2, 2]
@@ -27,18 +27,18 @@ class TestDBSCANClustering:
             {"path": "a2.jpg", "lat": 41.862650, "lon": -87.661250, "time": None},
             {"path": "a3.jpg", "lat": 41.862660, "lon": -87.661260, "time": None},
         ]
-        clusters = cluster_images_dbscan(images)
+        clusters = cluster_images(images, radius_meters=90.0)
         assert len(clusters) == 1
         assert len(clusters[0]) == 3
 
     def test_single_image(self):
         """One image should still produce one cluster."""
         images = [{"path": "solo.jpg", "lat": 41.862644, "lon": -87.661244, "time": None}]
-        clusters = cluster_images_dbscan(images)
+        clusters = cluster_images(images, radius_meters=90.0)
         assert len(clusters) == 1
 
     def test_empty_input(self):
-        clusters = cluster_images_dbscan([])
+        clusters = cluster_images([], radius_meters=90.0)
         assert clusters == []
 
     def test_no_gps_images_excluded(self):
@@ -47,7 +47,7 @@ class TestDBSCANClustering:
             {"path": "a.jpg", "lat": 41.862644, "lon": -87.661244, "time": None},
             {"path": "nogps.jpg", "lat": None, "lon": None, "time": None},
         ]
-        clusters = cluster_images_dbscan(images)
+        clusters = cluster_images(images, radius_meters=90.0)
         total_images = sum(len(c) for c in clusters)
         assert total_images == 1
 
@@ -151,17 +151,38 @@ class TestProcessorCandidateSiteOutput:
                 {"path": "/img/a2.jpg", "filename": "roof_overview.jpg",
                  "lat": 41.862650, "lon": -87.661250, "time": "2026-06-21 14:31:00",
                  "dest_path": "/out/a2.jpg"},
+                {"path": "/img/a3.jpg", "filename": "side1.jpg",
+                 "lat": 41.862655, "lon": -87.661255, "time": "2026-06-21 14:32:00",
+                 "dest_path": "/out/a3.jpg"},
+                {"path": "/img/a4.jpg", "filename": "side2.jpg",
+                 "lat": 41.862660, "lon": -87.661260, "time": "2026-06-21 14:33:00",
+                 "dest_path": "/out/a4.jpg"},
+                {"path": "/img/a5.jpg", "filename": "rear.jpg",
+                 "lat": 41.862665, "lon": -87.661265, "time": "2026-06-21 14:34:00",
+                 "dest_path": "/out/a5.jpg"},
             ],
             [
                 {"path": "/img/b1.jpg", "filename": "antenna_north.jpg",
                  "lat": 41.867000, "lon": -87.665000, "time": "2026-06-21 15:00:00",
                  "dest_path": "/out/b1.jpg"},
+                {"path": "/img/b2.jpg", "filename": "antenna_east.jpg",
+                 "lat": 41.867010, "lon": -87.665010, "time": "2026-06-21 15:01:00",
+                 "dest_path": "/out/b2.jpg"},
+                {"path": "/img/b3.jpg", "filename": "antenna_south.jpg",
+                 "lat": 41.867020, "lon": -87.665020, "time": "2026-06-21 15:02:00",
+                 "dest_path": "/out/b3.jpg"},
+                {"path": "/img/b4.jpg", "filename": "antenna_west.jpg",
+                 "lat": 41.867030, "lon": -87.665030, "time": "2026-06-21 15:03:00",
+                 "dest_path": "/out/b4.jpg"},
+                {"path": "/img/b5.jpg", "filename": "antenna_center.jpg",
+                 "lat": 41.867040, "lon": -87.665040, "time": "2026-06-21 15:04:00",
+                 "dest_path": "/out/b5.jpg"},
             ],
         ]
         sites = cluster_to_candidate_sites(clusters, agency_name="Chicago PD")
         assert len(sites) == 2
         assert isinstance(sites[0], CandidateSite)
         assert sites[0].identity.agency_name == "Chicago PD"
-        assert len(sites[0].photos) == 2
+        assert len(sites[0].photos) == 5
         assert sites[0].photos[0].category == "Site"   # "building_front" -> Site
         assert sites[1].photos[0].category == "RF"     # "antenna_north" -> RF

@@ -1,4 +1,4 @@
-﻿import os
+import os
 import json
 import re
 import subprocess
@@ -30,7 +30,7 @@ import processor
 import analyzer
 import reporter
 from site_model import CandidateSite, export_sites_json, export_sites_csv
-from processor import cluster_images_dbscan, split_clusters_by_time_gap, cluster_to_candidate_sites, MIN_SITE_PHOTOS
+from processor import cluster_images, split_clusters_by_time_gap, cluster_to_candidate_sites, MIN_SITE_PHOTOS
 from analyzer import enrich_gis
 
 # Import the image coordinates package
@@ -44,7 +44,7 @@ st.set_page_config(
     page_title="DFR Site Survey & Deployment Suite",
     page_icon="🚁",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 # Handle OAuth callback before any other UI
@@ -56,6 +56,40 @@ st.markdown("""
     .reportview-container {
         background: #0F172A;
         color: #F8FAFC;
+    }
+    section.main > div.block-container {
+        max-width: 1480px;
+        padding-top: 0.75rem;
+        padding-bottom: 1.5rem;
+        padding-left: 1.25rem;
+        padding-right: 1.25rem;
+    }
+    section[data-testid="stSidebar"] {
+        width: 18rem;
+    }
+    section[data-testid="stSidebar"] [data-testid="stSidebarNav"] {
+        display: none;
+    }
+    section[data-testid="stSidebar"] .block-container {
+        padding-top: 0.75rem;
+        padding-bottom: 0.75rem;
+        padding-left: 0.75rem;
+        padding-right: 0.75rem;
+    }
+    section[data-testid="stSidebar"] img {
+        max-width: 120px;
+    }
+    section[data-testid="stSidebar"] h1,
+    section[data-testid="stSidebar"] h2,
+    section[data-testid="stSidebar"] h3 {
+        margin-top: 0.25rem;
+        margin-bottom: 0.35rem;
+    }
+    section[data-testid="stSidebar"] button {
+        padding-top: 0.35rem;
+        padding-bottom: 0.35rem;
+        min-height: 2.2rem;
+        font-size: 0.88rem;
     }
     .main-header {
         background: linear-gradient(135deg, #1E3A8A 0%, #3B82F6 100%);
@@ -83,6 +117,85 @@ st.markdown("""
         margin: 2px 0 0 0;
         opacity: 0.9;
         font-size: 0.85rem;
+    }
+    .mission-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 14px;
+        align-items: center;
+        margin: 8px 0 12px 0;
+        padding: 12px 14px;
+        border: 1px solid #DBEAFE;
+        border-radius: 14px;
+        background: linear-gradient(135deg, #F8FAFC 0%, #EFF6FF 100%);
+    }
+    .mission-chip {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 6px;
+        padding-right: 10px;
+        border-right: 1px solid rgba(148, 163, 184, 0.35);
+        color: #0F172A;
+        font-size: 0.92rem;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+    .mission-chip:last-child {
+        border-right: none;
+        padding-right: 0;
+    }
+    .mission-chip .label {
+        color: #64748B;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 0.68rem;
+        font-weight: 700;
+    }
+    .workflow-roadmap {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 4px 0 16px 0;
+    }
+    .workflow-step {
+        border-radius: 999px;
+        border: 1px solid #CBD5E1;
+        padding: 6px 12px;
+        background: #FFFFFF;
+        color: #475569;
+        font-size: 0.85rem;
+        font-weight: 600;
+    }
+    .workflow-step.current {
+        background: linear-gradient(135deg, #DBEAFE 0%, #EFF6FF 100%);
+        border-color: #60A5FA;
+        color: #1D4ED8;
+    }
+    .workflow-step.complete {
+        background: #ECFDF5;
+        border-color: #34D399;
+        color: #047857;
+    }
+    .enterprise-section {
+        border: 1px solid #DBEAFE;
+        border-radius: 18px;
+        background: #FFFFFF;
+        box-shadow: 0 12px 32px rgba(15, 23, 42, 0.05);
+        padding: 1rem 1rem 0.9rem 1rem;
+        margin-bottom: 1rem;
+    }
+    .enterprise-section h2,
+    .enterprise-section h3 {
+        margin-top: 0;
+    }
+    .stage-callout {
+        border-radius: 14px;
+        background: linear-gradient(135deg, #EFF6FF 0%, #FFFFFF 100%);
+        border: 1px solid #BFDBFE;
+        padding: 0.9rem 1rem;
+        color: #1E3A8A;
+        font-weight: 600;
+        margin-top: 0.65rem;
     }
     .metric-card {
         background-color: #1E293B;
@@ -124,6 +237,7 @@ if "customer_info" not in st.session_state:
         "crane_contractor": "",
         "tower_climber_contractor": "",
         "brinc_pm": "",
+        "contacts": [],
         "survey_delivery_target": "",
         "power_circuit_requirements": "",
         "internet_ethernet_access": "",
@@ -468,7 +582,208 @@ def _run_connected_docs_search(agency, city=""):
     return found_any
 
 
-# Header â€“ compact banner with BRINC logo
+def _mission_overview():
+    """Return lightweight status data for the top-of-page mission summary."""
+    processed_sites = st.session_state.get("processed_sites", [])
+    customer_info = st.session_state.get("customer_info", {})
+    uploaded_count = int(st.session_state.get("_last_uploaded_file_count", 0) or 0)
+    agency_name = customer_info.get("agency_name", "").strip()
+    connected_sources = sum(
+        1
+        for key in ("drive_gemini_results", "jira_results", "hubspot_results", "calendar_results")
+        if st.session_state.get(key, {}).get("status") in ("connected",)
+    )
+
+    if processed_sites:
+        stage = "Review"
+        stage_note = f"{len(processed_sites)} site(s) detected"
+    elif uploaded_count:
+        stage = "Ingesting"
+        stage_note = f"{uploaded_count} file(s) queued"
+    else:
+        stage = "Intake"
+        stage_note = "Ready for first upload"
+
+    if connected_sources and processed_sites:
+        stage = "Sync"
+        stage_note = f"{connected_sources} connected source(s)"
+
+    return {
+        "agency": agency_name or "Not set",
+        "sites": len(processed_sites),
+        "files": uploaded_count,
+        "stage": stage,
+        "stage_note": stage_note,
+        "last_sync": _last_updated,
+    }
+
+
+def _current_stage_next_action():
+    """Return the next action the operator should take based on current state."""
+    processed_sites = st.session_state.get("processed_sites", [])
+    uploaded_count = int(st.session_state.get("_last_uploaded_file_count", 0) or 0)
+
+    if not uploaded_count:
+        return "Upload survey photos to start intake."
+    if not processed_sites:
+        return "Wait for EXIF clustering and site detection to complete."
+    if not st.session_state.get("agency_name") and not st.session_state.customer_info.get("agency_name"):
+        return "Confirm the agency name and address."
+    if not st.session_state.get("drive_folder_url"):
+        return "Review sites and generate the deployment report."
+    return "Sync the final report package to Drive."
+
+
+def _render_kpi_cards():
+    """Render the top-level mission KPIs."""
+    overview = _mission_overview()
+    connected_sources = sum(
+        1
+        for key in ("drive_gemini_results", "jira_results", "hubspot_results", "calendar_results")
+        if st.session_state.get(key, {}).get("status") in ("connected",)
+    )
+    contacts_count = len(st.session_state.customer_info.get("contacts", []))
+    cols = st.columns(4)
+    metrics = [
+        ("Loaded Sites", overview["sites"], None),
+        ("Input Files", overview["files"], None),
+        ("Contacts", contacts_count, None),
+        ("Connected Sources", connected_sources, None),
+    ]
+    for col, (label, value, delta) in zip(cols, metrics):
+        with col:
+            st.metric(label, value, delta=delta)
+
+
+def _render_workflow_tracker():
+    """Render the mission progress tracker and next required action."""
+    overview = _mission_overview()
+    stage_order = ["Intake", "Ingest", "Review", "Sync", "Deploy"]
+    completed = []
+    for step in stage_order:
+        if step == "Intake":
+            completed.append(overview["files"] > 0 or overview["sites"] > 0)
+        elif step == "Ingest":
+            completed.append(overview["files"] > 0 and overview["sites"] > 0)
+        elif step == "Review":
+            completed.append(overview["sites"] > 0)
+        elif step == "Sync":
+            completed.append(overview["sites"] > 0 and overview["stage"] in ("Sync", "Deploy"))
+        elif step == "Deploy":
+            completed.append(overview["stage"] == "Deploy")
+
+    pills = []
+    for step, done in zip(stage_order, completed):
+        cls = "workflow-step"
+        if step == overview["stage"]:
+            cls += " current"
+        elif done:
+            cls += " complete"
+        pills.append(f'<span class="{cls}">{step}</span>')
+
+    st.markdown(
+        f"""
+        <div class="enterprise-section">
+            <h3>Mission Workflow</h3>
+            <div class="workflow-roadmap">{''.join(pills)}</div>
+            <div class="stage-callout">
+                Current stage: {overview["stage"]} · Next action: {_current_stage_next_action()}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_primary_map_section():
+    """Render the primary map and site summary block."""
+    with st.container(border=True):
+        st.subheader("Site Map")
+        st.caption("Primary operational map for clustered survey sites and deployment readiness.")
+        if st.session_state.processed_sites:
+            sites = st.session_state.processed_sites
+            center_lat = sum(s['latitude'] for s in sites) / len(sites)
+            center_lon = sum(s['longitude'] for s in sites) / len(sites)
+
+            m = folium.Map(location=[center_lat, center_lon], zoom_start=13, tiles="CartoDB positron")
+
+            if "city_boundary_geojson" not in st.session_state:
+                detected = st.session_state.get("gps_detected_agency", {})
+                city = detected.get("city", "")
+                state = detected.get("state", "")
+                geojson = reporter.query_city_boundary(city, state) if city else None
+                st.session_state.city_boundary_geojson = geojson
+
+            boundary = st.session_state.city_boundary_geojson
+            if boundary:
+                folium.GeoJson(
+                    boundary,
+                    name="City Boundary",
+                    style_function=lambda _: {
+                        "fillColor": "#3b82f6",
+                        "color": "#1e40af",
+                        "weight": 2.5,
+                        "dashArray": "6 4",
+                        "fillOpacity": 0.06,
+                    },
+                ).add_to(m)
+
+            TWO_MILES_M = 3218.69
+            for site in sites:
+                lat, lon = site['latitude'], site['longitude']
+                _parts = [p.strip() for p in site['address'].split(',')]
+                label = ', '.join(_parts[:2]) if len(_parts) >= 2 else site['address']
+                folium.Circle(
+                    location=[lat, lon],
+                    radius=TWO_MILES_M,
+                    color="#ef4444",
+                    weight=1.5,
+                    fill=True,
+                    fill_color="#ef4444",
+                    fill_opacity=0.06,
+                    tooltip=f"2-mile radius — {label}",
+                ).add_to(m)
+                folium.Marker(
+                    location=[lat, lon],
+                    tooltip=label,
+                    popup=f"<b>{site['site_id']}</b><br>{label}<br>Airspace: {site.get('airspace', 'N/A')}",
+                    icon=folium.Icon(color="red", icon="tower-broadcast", prefix="fa"),
+                ).add_to(m)
+
+            st_folium(m, width=None, height=600, returned_objects=[])
+
+            summary_cols = st.columns(3)
+            with summary_cols[0]:
+                st.metric("Sites Detected", len(sites))
+            with summary_cols[1]:
+                st.metric("Candidate Sites", len(st.session_state.get("candidate_sites", [])))
+            with summary_cols[2]:
+                st.metric("Agency", st.session_state.customer_info.get("agency_name", "Not set") or "Not set")
+        else:
+            st.info("No sites loaded. Upload survey photos to generate clustered sites and the mission map.")
+            st.markdown(
+                """
+                <div style="
+                    min-height: 600px;
+                    border: 1px dashed #BFDBFE;
+                    border-radius: 16px;
+                    background: linear-gradient(135deg, #F8FAFC 0%, #EFF6FF 100%);
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    color: #475569;
+                    font-weight: 600;
+                    text-align: center;
+                    padding: 1rem;
+                ">
+                    Map will appear here after EXIF clustering completes.
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+# Header - compact banner with BRINC logo
 import base64 as _b64
 
 def _logo_b64():
@@ -510,17 +825,26 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+_overview = _mission_overview()
+st.markdown(
+    f"""
+    <div class="mission-strip">
+        <div class="mission-chip"><span class="label">Mission</span><span>{_overview["agency"]}</span></div>
+        <div class="mission-chip"><span class="label">Sites</span><span>{_overview["sites"]}</span></div>
+        <div class="mission-chip"><span class="label">Files</span><span>{_overview["files"]}</span></div>
+        <div class="mission-chip"><span class="label">Last Sync</span><span>{_overview["last_sync"]}</span></div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
 # Sidebar - Settings & Integration Configs
 with st.sidebar:
-    st.image(os.path.join(APP_DIR, "images", "BRINC_Logo_White.png"), width=160)
-    st.title("Settings & APIs")
-    
-    st.subheader("1. Survey Settings")
+    st.image(os.path.join(APP_DIR, "images", "BRINC_Logo_White.png"), width=120)
     output_dir = _resolve_app_path("./processed_sites")
     proximity_radius = 90
-    
-    st.subheader("2. Integrations & Credentials")
-    with st.expander("API Configurations", expanded=False):
+
+    with st.expander("Advanced Integrations / API Configurations", expanded=False):
         hubspot_api = st.text_input("HubSpot Access Token", type="password",
                                      value=st.secrets.get("HUBSPOT_ACCESS_TOKEN", ""))
         jira_url = st.text_input("Jira Server URL",
@@ -553,57 +877,67 @@ with st.sidebar:
         google_oauth.render_connect_button()
 
     st.divider()
-    st.subheader("Previous Sessions")
-    resolved_output_dir = _resolve_app_path(output_dir)
-    if os.path.exists(resolved_output_dir):
-        subdirs = [
-            d for d in os.listdir(resolved_output_dir)
-            if os.path.isdir(os.path.join(resolved_output_dir, d))
-            and d != "__pycache__"
-            and d != "Unclassified_No_GPS"
-        ]
-        if subdirs:
-            for d in sorted(subdirs):
-                meta_file = os.path.join(resolved_output_dir, d, "session_metadata.json")
-                display_name = None
+    with st.expander("Previous Sessions", expanded=False):
+        resolved_output_dir = _resolve_app_path(output_dir)
+        if os.path.exists(resolved_output_dir):
+            subdirs = [
+                d for d in os.listdir(resolved_output_dir)
+                if os.path.isdir(os.path.join(resolved_output_dir, d))
+                and d != "__pycache__"
+                and d != "Unclassified_No_GPS"
+            ]
 
-                if os.path.exists(meta_file):
+            def _session_created_at(folder_name):
+                timestamp_match = re.search(r"(\d{8}_\d{6})$", folder_name)
+                if timestamp_match:
                     try:
-                        with open(meta_file, "r") as mf:
-                            loaded_metadata = json.load(mf)
-                        if "customer_info" in loaded_metadata and loaded_metadata["customer_info"].get("agency_name"):
-                            display_name = loaded_metadata["customer_info"]["agency_name"]
-                    except Exception:
+                        return datetime.datetime.strptime(timestamp_match.group(1), "%Y%m%d_%H%M%S")
+                    except ValueError:
                         pass
+                try:
+                    return datetime.datetime.fromtimestamp(os.path.getctime(os.path.join(resolved_output_dir, folder_name)))
+                except Exception:
+                    return datetime.datetime.min
 
-                if not display_name:
-                    display_name = d.replace("Site_1_", "").replace("Site_2_", "").replace("Site_3_", "").replace("_", " ").replace("Site-001", "").replace("Site-002", "")
-                    if "Lansing" in display_name:
-                        display_name = "Lansing Illinois Police"
+            if subdirs:
+                for d in sorted(subdirs, key=_session_created_at, reverse=True):
+                    meta_file = os.path.join(resolved_output_dir, d, "session_metadata.json")
+                    display_name = None
 
-                if st.button(display_name, key=f"sidebar_prev_sess_btn_{d}", width="stretch"):
                     if os.path.exists(meta_file):
                         try:
                             with open(meta_file, "r") as mf:
-                                loaded_site = json.load(mf)
-                            st.session_state.processed_sites = [loaded_site]
-                            if loaded_site.get("images"):
-                                st.session_state.active_bg_image = loaded_site["images"][0]["filename"]
-                            if "customer_info" in loaded_site:
-                                st.session_state.customer_info = loaded_site["customer_info"]
-                            st.success(f"Loaded session for {display_name}")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Failed to load session: {e}")
-                    else:
-                        st.warning("No session_metadata.json found.")
-        else:
-            st.caption("No previous sessions found.")
-    else:
-        st.caption("No output directory found.")
+                                loaded_metadata = json.load(mf)
+                            if "customer_info" in loaded_metadata and loaded_metadata["customer_info"].get("agency_name"):
+                                display_name = loaded_metadata["customer_info"]["agency_name"]
+                        except Exception:
+                            pass
 
-    st.divider()
-    st.caption("[Privacy Policy](/Privacy_Policy) · [Terms of Service](/Terms_of_Service)")
+                    if not display_name:
+                        display_name = d.replace("Site_1_", "").replace("Site_2_", "").replace("Site_3_", "").replace("_", " ").replace("Site-001", "").replace("Site-002", "")
+                        if "Lansing" in display_name:
+                            display_name = "Lansing Illinois Police"
+
+                    if st.button(display_name, key=f"sidebar_prev_sess_btn_{d}", width="stretch"):
+                        if os.path.exists(meta_file):
+                            try:
+                                with open(meta_file, "r") as mf:
+                                    loaded_site = json.load(mf)
+                                st.session_state.processed_sites = [loaded_site]
+                                if loaded_site.get("images"):
+                                    st.session_state.active_bg_image = loaded_site["images"][0]["filename"]
+                                if "customer_info" in loaded_site:
+                                    st.session_state.customer_info = loaded_site["customer_info"]
+                                st.success(f"Loaded session for {display_name}")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to load session: {e}")
+                        else:
+                            st.warning("No session_metadata.json found.")
+            else:
+                st.caption("No previous sessions found.")
+        else:
+            st.caption("No output directory found.")
 
 # Ingestion Controls
 # Get Drive manager once up front (returns None if not authenticated)
@@ -617,36 +951,34 @@ def _on_files_changed():
     st.session_state.pop("city_boundary_geojson", None)
     st.session_state.pop("candidate_sites", None)
 
-# Collapse the uploader once sites have been processed
-_has_sites = bool(st.session_state.get("processed_sites"))
-_upload_col, _status_col = st.columns(2)
-with _upload_col:
-    with st.expander("📤 Upload Survey Photos", expanded=not _has_sites):
-        st.markdown("**🛰️ EXIF Scan & Clustering**")
+def _render_survey_upload_block(current_proximity_radius: int, compact: bool = False):
+    """Render the survey upload controls in either full or compact form."""
+    container = st.expander("Upload Survey Photos", expanded=False) if compact else st.container(border=True)
+    with container:
+        if compact:
+            st.caption("Collapsed intake panel")
+        else:
+            st.subheader("Upload Survey Photos")
+            st.caption("Drag raw survey photos to start GPS detection, EXIF clustering, and site ingestion.")
+
         proximity_radius = st.slider(
             "🛰️ Clustering Proximity (Meters)",
             min_value=10,
             max_value=500,
-            value=proximity_radius,
+            value=current_proximity_radius,
             help="Controls how tightly photos must cluster before they are treated as the same site.",
-        )
-        clustering_method = st.selectbox(
-            "🧭 Clustering Method",
-            ["Radius (90m)", "DBSCAN (auto)"],
-            index=0,
-            key="clustering_method",
-            help="Radius: groups photos within 90m. DBSCAN: auto-detects clusters by density.",
         )
         uploaded_files = st.file_uploader(
             "Upload raw survey photos (.jpg, .jpeg, .png)",
             accept_multiple_files=True,
             type=["jpg", "jpeg", "png", "heic"],
             on_change=_on_files_changed,
-            label_visibility="collapsed",
+            key="survey_photo_upload",
+            label_visibility="collapsed" if compact else "visible",
         )
+        st.session_state["_last_uploaded_file_count"] = len(uploaded_files) if uploaded_files else 0
 
         if uploaded_files:
-            # Auto-detect agency from GPS
             if "gps_detected_agency" not in st.session_state:
                 with st.spinner("Detecting location from photo GPS data..."):
                     for uf in uploaded_files:
@@ -656,6 +988,10 @@ with _upload_col:
                             agency = detection["agency_name"]
                             st.session_state.customer_info["agency_name"] = agency
                             st.session_state.customer_info["agency_address"] = reporter._format_short_address(detection.get("address", ""))
+                            st.session_state["_pending_agency_widget_sync"] = {
+                                "agency_name": agency,
+                                "agency_address": st.session_state.customer_info["agency_address"],
+                            }
                             break
                     else:
                         st.session_state.gps_detected_agency = {}
@@ -672,21 +1008,177 @@ with _upload_col:
                     st.warning("Could not search Gmail for contacts. Use the 'Pull Contacts from Gmail' button below to retry.")
                 else:
                     st.warning("Connect your Google account to search Gmail for contacts.")
-
         else:
             client_name = "Untitled_Site_Survey"
 
-# Auto-process on upload â€” runs once per file set, no manual button needed
+        if uploaded_files:
+            st.info(f"{len(uploaded_files)} file(s) queued for ingestion.")
+        else:
+            st.info("Upload survey photos to unlock contact and deployment fields.")
+
+    return uploaded_files, client_name, proximity_radius
+
+uploaded_files = None
+client_name = "Untitled_Site_Survey"
+
+if not st.session_state.get("survey_photo_upload"):
+    uploaded_files, client_name, proximity_radius = _render_survey_upload_block(proximity_radius, compact=False)
+
+# Mission workspace
+_overview = _mission_overview()
+_render_kpi_cards()
+_render_workflow_tracker()
+_render_primary_map_section()
+
+with st.container(border=True):
+    st.subheader("Agency Information")
+    agency_tabs = st.tabs(["Agency", "Contacts", "Deployment", "Documents"])
+
+    with agency_tabs[0]:
+        col_a1, col_a2 = st.columns([2, 1])
+        with col_a1:
+            pending_agency_sync = st.session_state.pop("_pending_agency_widget_sync", None)
+            if pending_agency_sync:
+                st.session_state["_widget_agency_name"] = pending_agency_sync.get(
+                    "agency_name", st.session_state.customer_info.get("agency_name", "")
+                )
+                st.session_state["_widget_agency_address"] = pending_agency_sync.get(
+                    "agency_address", st.session_state.customer_info.get("agency_address", "")
+                )
+            elif "_widget_agency_name" not in st.session_state:
+                st.session_state["_widget_agency_name"] = st.session_state.customer_info.get("agency_name", "")
+            if "_widget_agency_address" not in st.session_state:
+                st.session_state["_widget_agency_address"] = st.session_state.customer_info.get("agency_address", "")
+            st.session_state.customer_info["agency_name"] = st.text_input("Agency Name", key="_widget_agency_name")
+            st.session_state.customer_info["agency_address"] = st.text_input("Agency Address", key="_widget_agency_address")
+        with col_a2:
+            st.markdown("**Connected Docs**")
+            if google_oauth.is_authenticated():
+                agency = st.session_state.customer_info.get("agency_name", "")
+                if st.button("🔄 Refresh Connected Docs", width="stretch"):
+                    if not agency:
+                        st.warning("Enter or detect an Agency Name first.")
+                    else:
+                        st.session_state._last_doc_search_agency = ""
+                        st.rerun()
+            else:
+                google_oauth.render_connect_button("Connect Google for Gmail & Drive Lookup")
+
+        summary_cols = st.columns(3)
+        with summary_cols[0]:
+            st.metric("Mission", st.session_state.customer_info.get("agency_name", "Not set") or "Not set")
+        with summary_cols[1]:
+            st.metric("Address", st.session_state.customer_info.get("agency_address", "Not set") or "Not set")
+        with summary_cols[2]:
+            st.metric("Contacts", len(st.session_state.customer_info.get("contacts", [])))
+
+    with agency_tabs[1]:
+        contacts_df = pd.DataFrame(st.session_state.customer_info.get("contacts", []))
+        if not contacts_df.empty:
+            st.dataframe(contacts_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No contacts loaded yet. Use the Survey Pipeline tab or Gmail lookup to populate contacts.")
+        st.caption("Contact editing remains available in the Survey Pipeline for compatibility.")
+
+    with agency_tabs[2]:
+        dep_cols = st.columns(3)
+        with dep_cols[0]:
+            st.session_state.customer_info["survey_delivery_target"] = st.text_input(
+                "Survey / Delivery Target",
+                value=st.session_state.customer_info.get("survey_delivery_target", ""),
+                placeholder="e.g. Week of September 28, 2026",
+                key="agency_tab_survey_delivery_target",
+            )
+        with dep_cols[1]:
+            st.session_state.customer_info["power_circuit_requirements"] = st.text_input(
+                "Power Circuit Requirements",
+                value=st.session_state.customer_info.get("power_circuit_requirements", ""),
+                placeholder="e.g. 120V / 20A Dedicated Circuit",
+                key="agency_tab_power_circuit_requirements",
+            )
+        with dep_cols[2]:
+            st.session_state.customer_info["internet_ethernet_access"] = st.text_input(
+                "Internet / Ethernet Access",
+                value=st.session_state.customer_info.get("internet_ethernet_access", ""),
+                placeholder="e.g. DHCP on isolated VLAN",
+                key="agency_tab_internet_ethernet_access",
+            )
+
+        dep_cols2 = st.columns(3)
+        with dep_cols2[0]:
+            st.session_state.customer_info["crane_contractor"] = st.text_input(
+                "Crane Contractor",
+                value=st.session_state.customer_info.get("crane_contractor", ""),
+                placeholder="e.g. Pending crane company",
+                key="agency_tab_crane_contractor",
+            )
+        with dep_cols2[1]:
+            st.session_state.customer_info["tower_climber_contractor"] = st.text_input(
+                "Tower Climber Contractor",
+                value=st.session_state.customer_info.get("tower_climber_contractor", ""),
+                placeholder="e.g. DNA",
+                key="agency_tab_tower_climber_contractor",
+            )
+        with dep_cols2[2]:
+            st.session_state.customer_info["brinc_pm"] = st.text_input(
+                "BRINC Project Manager",
+                value=st.session_state.customer_info.get("brinc_pm", ""),
+                placeholder="e.g. steven.beltran@brincdrones.com",
+                key="agency_tab_brinc_pm",
+            )
+
+        dep_cols3 = st.columns(2)
+        with dep_cols3[0]:
+            st.session_state.customer_info["follow_up_requirements"] = st.text_input(
+                "Follow-up Requirements",
+                value=st.session_state.customer_info.get("follow_up_requirements", ""),
+                placeholder="e.g. Infrastructure for site needs to be completed",
+                key="agency_tab_follow_up_requirements",
+            )
+        with dep_cols3[1]:
+            st.session_state.customer_info["action_items"] = st.text_input(
+                "Action Items",
+                value=st.session_state.customer_info.get("action_items", ""),
+                placeholder="e.g. Confirm ethernet and power 30 days before install",
+                key="agency_tab_action_items",
+            )
+
+    with agency_tabs[3]:
+        docs_cols = st.columns(2)
+        with docs_cols[0]:
+            st.markdown("**Drive / Notes**")
+            drive_data = st.session_state.get("drive_gemini_results")
+            if drive_data and drive_data.get("status") == "connected":
+                for note in drive_data.get("gemini_notes", [])[:5]:
+                    title = note.get("title", "Untitled")
+                    url = note.get("url", "")
+                    if url:
+                        st.markdown(f"- [{title}]({url})")
+                    else:
+                        st.caption(f"- {title}")
+            else:
+                st.caption("No connected documents yet.")
+        with docs_cols[1]:
+            st.markdown("**Jira / HubSpot / Calendar**")
+            jira_status = st.session_state.get("jira_results", {}).get("status", "idle")
+            hs_status = st.session_state.get("hubspot_results", {}).get("status", "idle")
+            cal_status = st.session_state.get("calendar_results", {}).get("status", "idle")
+            st.metric("Jira", jira_status)
+            st.metric("HubSpot", hs_status)
+            st.metric("Calendar", cal_status)
+
+# Auto-process on upload - runs once per file set, no manual button needed
 if uploaded_files and not st.session_state.get("_auto_processed"):
     st.session_state._auto_processed = True
 
-    with _status_col:
+    with st.container(border=True):
+        st.subheader("Processing Status")
         with st.status("Processing survey photos...", expanded=True) as status:
             _step_placeholder = status.empty()
             _detail_placeholder = status.empty()
             def _update_processing_progress(percent, message):
-                status.update(label=f"Processing â€” {int(percent)}%")
-                _detail_placeholder.write(f"â³ {message}")
+                status.update(label=f"Processing - {int(percent)}%")
+                _detail_placeholder.write(f"⏳ {message}")
 
             try:
                 st.session_state.processed_sites = []
@@ -769,6 +1261,7 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                         "crane_contractor": existing.get("crane_contractor", ""),
                         "tower_climber_contractor": existing.get("tower_climber_contractor", ""),
                         "brinc_pm": existing.get("brinc_pm", ""),
+                        "contacts": existing.get("contacts", []),
                         "survey_delivery_target": existing.get("survey_delivery_target", ""),
                         "power_circuit_requirements": existing.get("power_circuit_requirements", ""),
                         "internet_ethernet_access": existing.get("internet_ethernet_access", ""),
@@ -778,9 +1271,11 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                         "report_date": datetime.datetime.strptime(survey_date, "%Y-%m-%d").strftime("%B %d, %Y") if survey_date else existing.get("report_date", ""),
                         "surveyor": surveyor,
                     }
-                    # Sync widget keys so text_inputs pick up the new name on rerun
-                    st.session_state["_widget_agency_name"] = agency_name
-                    st.session_state["_widget_agency_address"] = st.session_state.customer_info["agency_address"]
+                    # Defer widget sync until the next rerun, before the inputs are instantiated.
+                    st.session_state["_pending_agency_widget_sync"] = {
+                        "agency_name": agency_name,
+                        "agency_address": st.session_state.customer_info["agency_address"],
+                    }
                     # Update gps_detected_agency to match the final resolved name
                     city = processor.extract_city_from_address(first_address) if first_address else ""
                     st.session_state.gps_detected_agency = {
@@ -797,22 +1292,10 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                 st.session_state.candidate_sites = []
                 if site_data:
                     status.update(label="Building candidate sites...")
-                    if st.session_state.get("clustering_method") == "DBSCAN (auto)":
-                        all_images = []
-                        for site in site_data:
-                            all_images.extend(site.get("images", []))
-                        clusters = cluster_images_dbscan(all_images)
-                        clusters = split_clusters_by_time_gap(clusters)
-                        st.session_state.candidate_sites = cluster_to_candidate_sites(
-                            clusters,
-                            agency_name=st.session_state.customer_info.get("agency_name", ""),
-                            survey_date=survey_date or None,
-                        )
-                    else:
-                        st.session_state.candidate_sites = [
-                            CandidateSite.from_site_dict(s) for s in site_data
-                            if len(s.get("images", [])) >= MIN_SITE_PHOTOS
-                        ]
+                    st.session_state.candidate_sites = [
+                        CandidateSite.from_site_dict(s) for s in site_data
+                        if len(s.get("images", [])) >= MIN_SITE_PHOTOS
+                    ]
 
                     total_cs = len(st.session_state.candidate_sites)
                     for cs_idx, cs in enumerate(st.session_state.candidate_sites, start=1):
@@ -970,8 +1453,8 @@ def _render_site_checklist(site, site_idx):
             site.flight.airspace_class = st.text_input(
                 "Airspace Class", value=site.flight.airspace_class or "",
                 key=f"airspace_{site_idx}")
-            st.text(f"Nearby Airports: {site.flight.nearby_airports or 'â€”'}")
-            st.text(f"Nearby Heliports: {site.flight.nearby_heliports or 'â€”'}")
+            st.text(f"Nearby Airports: {site.flight.nearby_airports or '—'}")
+            st.text(f"Nearby Heliports: {site.flight.nearby_heliports or '—'}")
         with col2:
             site.flight.launch_direction = st.text_input(
                 "Launch Direction", value=site.flight.launch_direction or "",
@@ -1208,7 +1691,7 @@ def _render_annotator_workspace(selected_site):
             mcol1, mcol2 = st.columns([3, 1])
             with mcol1:
                 emoji = color_emoji.get(marker.get('type', ''), '⚫')
-                st.markdown(f"{emoji} **{marker.get('type', '')}** â€” {marker.get('label', '')}")
+                st.markdown(f"{emoji} **{marker.get('type', '')}** — {marker.get('label', '')}")
             with mcol2:
                 if st.button("✕ Remove", key=f"del_marker_{selected_site['site_id']}_{st.session_state.active_bg_image}_{idx}"):
                     selected_site['markers_by_image'][st.session_state.active_bg_image].pop(idx)
@@ -1264,164 +1747,6 @@ def _render_annotator_workspace(selected_site):
 tab1, tab2, tab3, tab4 = st.tabs(["📋 Survey Pipeline", "🛠️ Annotate", "🔗 Workflow Sync", "📈 Analytics & Logs"])
 
 with tab1:
-    # 0. Customer Info Panel at the top
-    st.subheader("Customer & Agency Information")
-    col_c1, col_c2, col_c3 = st.columns([2, 1, 1.5])
-    with col_c1:
-        # Seed widget keys from customer_info if not yet set
-        if "_widget_agency_name" not in st.session_state:
-            st.session_state["_widget_agency_name"] = st.session_state.customer_info.get("agency_name", "")
-        if "_widget_agency_address" not in st.session_state:
-            st.session_state["_widget_agency_address"] = st.session_state.customer_info.get("agency_address", "")
-        st.session_state.customer_info["agency_name"] = st.text_input("Agency Name", key="_widget_agency_name")
-        st.session_state.customer_info["agency_address"] = st.text_input("Agency Address", key="_widget_agency_address")
-    with col_c2:
-        st.markdown("")  # spacer to align button with inputs
-        st.markdown("")
-        if google_oauth.is_authenticated():
-            agency = st.session_state.customer_info.get("agency_name", "")
-            # Auto-trigger: search when agency name is new/changed
-            if agency and agency != st.session_state.get("_last_doc_search_agency", ""):
-                city = st.session_state.get("gps_detected_agency", {}).get("city", "")
-                if not city:
-                    # Derive city from the agency address as fallback
-                    addr = st.session_state.customer_info.get("agency_address", "")
-                    city = processor.extract_city_from_address(addr) if addr else ""
-                with st.status("Auto-pulling contacts & documents...", expanded=True) as pull_status:
-                    pull_status.write(f"🔍 Searching for \"{agency}\"...")
-                    _run_connected_docs_search(agency, city)
-                    pull_status.update(label="Search complete!", state="complete", expanded=False)
-                st.rerun()
-
-            # Manual refresh button
-            if st.button("🔄 Refresh Connected Docs", width="stretch"):
-                if not agency:
-                    st.warning("Enter or detect an Agency Name first.")
-                else:
-                    st.session_state._last_doc_search_agency = ""  # force re-search
-                    st.rerun()
-        else:
-            google_oauth.render_connect_button("Connect Google for Gmail & Drive Lookup")
-
-    with col_c3:
-        # --- Connected Documents Panel ---
-        st.markdown("**Connected Documents**")
-        has_any = False
-
-        # --- Gemini Notes & Drive Links ---
-        drive_data = st.session_state.get("drive_gemini_results")
-        if drive_data and drive_data.get("status") == "connected":
-            has_any = True
-            for note in drive_data.get("gemini_notes", []):
-                title = note.get("title", "Untitled")
-                url = note.get("url", "")
-                date = note.get("date", "")
-                short_title = title[:60] + "..." if len(title) > 60 else title
-                if url:
-                    st.markdown(f"📝 [{short_title}]({url})")
-                else:
-                    st.caption(f"📝 {short_title}")
-                if date:
-                    st.caption(f"  Modified: {date}")
-
-            for folder in drive_data.get("drive_folders", []):
-                name = folder.get("name", "")
-                url = folder.get("url", "")
-                if url:
-                    st.markdown(f"📂 [{name}]({url})")
-
-            # Extracted specs summary
-            specs = drive_data.get("extracted_specs", {})
-            if specs:
-                st.markdown("---")
-                st.caption("**Extracted from notes:**")
-                for label, key in [
-                    ("Install Target", "survey_delivery_target"),
-                    ("Power", "power_circuit_requirements"),
-                    ("Network", "internet_ethernet_access"),
-                    ("Bandwidth", "bandwidth_requirement"),
-                    ("SSO", "sso_provider"),
-                    ("Deployment", "deployment_config"),
-                    ("Mount", "mount_type"),
-                    ("Waiver", "waiver_type"),
-                ]:
-                    if specs.get(key):
-                        st.caption(f"  {label}: {specs[key]}")
-
-        # --- Jira Tickets ---
-        jira_data = st.session_state.get("jira_results")
-        if jira_data and jira_data.get("status") == "connected":
-            has_any = True
-            st.markdown("---")
-            st.markdown("**🎫 Jira Tickets**")
-            for ticket in jira_data.get("tickets", []):
-                key = ticket.get("key", "")
-                summary = ticket.get("summary", "")
-                status = ticket.get("status", "")
-                url = ticket.get("url", "")
-                short_summary = summary[:50] + "..." if len(summary) > 50 else summary
-                status_badge = f" `{status}`" if status else ""
-                if url:
-                    st.markdown(f"[{key}]({url}) â€” {short_summary}{status_badge}")
-                else:
-                    st.caption(f"{key} â€” {short_summary}{status_badge}")
-        elif jira_data and jira_data.get("status") == "error":
-            st.caption(f"⚠️ Jira: {jira_data.get('error', 'Unknown error')}")
-
-        # --- HubSpot Records ---
-        hubspot_data = st.session_state.get("hubspot_results")
-        if hubspot_data and hubspot_data.get("status") == "connected":
-            has_any = True
-            st.markdown("---")
-            st.markdown("**🏢 HubSpot**")
-            for co in hubspot_data.get("companies", []):
-                name = co.get("name", "")
-                url = co.get("url", "")
-                if url:
-                    st.markdown(f"Company: [{name}]({url})")
-                else:
-                    st.caption(f"Company: {name}")
-            for deal in hubspot_data.get("deals", []):
-                name = deal.get("name", "")
-                stage = deal.get("stage", "")
-                url = deal.get("url", "")
-                amount = deal.get("amount", "")
-                stage_badge = f" `{stage}`" if stage else ""
-                amount_str = f" (${amount})" if amount else ""
-                if url:
-                    st.markdown(f"Deal: [{name}]({url}){stage_badge}{amount_str}")
-                else:
-                    st.caption(f"Deal: {name}{stage_badge}{amount_str}")
-        elif hubspot_data and hubspot_data.get("status") == "error":
-            st.caption(f"⚠️ HubSpot: {hubspot_data.get('error', 'Unknown error')}")
-
-        # --- Calendar Events ---
-        cal_data = st.session_state.get("calendar_results")
-        if cal_data and cal_data.get("status") == "connected":
-            has_any = True
-            st.markdown("---")
-            st.markdown("**📅 Calendar Events**")
-            for event in cal_data.get("events", []):
-                title = event.get("title", "Untitled")
-                date = event.get("date", "")
-                url = event.get("url", "")
-                attendees_count = event.get("attendees_count", 0)
-                short_title = title[:60] + "..." if len(title) > 60 else title
-                if url:
-                    st.markdown(f"[{short_title}]({url})")
-                else:
-                    st.caption(short_title)
-                detail = date[:10] if date else ""
-                if attendees_count:
-                    detail += f" · {attendees_count} attendee{'s' if attendees_count != 1 else ''}"
-                if detail:
-                    st.caption(detail)
-        elif cal_data and cal_data.get("status") == "auth_error":
-            st.caption(f"⚠️ Calendar: {cal_data.get('error', 'Auth error')}")
-
-        if not has_any:
-            st.caption("No connected documents yet. Enter an Agency Name to auto-search.")
-
     if st.session_state.processed_sites:
         # --- POC / Contacts Table ---
         st.markdown("**Points of Contact**")
@@ -1461,7 +1786,7 @@ with tab1:
                 if c_email_lower not in existing_emails:
                     st.session_state.poc_rows.append({
                         "_uid": _next_poc_uid(),
-                        "role": "",
+                        "role": "Other",
                         "name": c.get("name", ""),
                         "email": c["email"],
                         "title": c.get("title", ""),
@@ -1477,11 +1802,13 @@ with tab1:
                                 row["phone"] = c["phone"]
                             break
 
-        role_options = ["", "POC", "IT", "Facilities", "RTCC", "Radio Shop", "Other"]
+        role_options = ["Other", "POC", "IT", "Facilities", "RTCC", "Radio Shop"]
         rows_to_remove = []
         for row in st.session_state.poc_rows:
             if "_uid" not in row:
                 row["_uid"] = _next_poc_uid()
+            if row.get("role") not in role_options:
+                row["role"] = "Other"
         if st.session_state.poc_rows:
             hc1, hc2, hc3, hc4, hc5, hc6 = st.columns([1, 1.8, 1.8, 1.8, 1.5, 0.5])
             hc1.caption("Role")
@@ -1531,7 +1858,7 @@ with tab1:
             st.rerun()
 
         if st.button("＋ Add Contact", key="add_poc_row"):
-            st.session_state.poc_rows.append({"_uid": _next_poc_uid(), "role": "", "name": "", "email": "", "title": "", "phone": ""})
+            st.session_state.poc_rows.append({"_uid": _next_poc_uid(), "role": "Other", "name": "", "email": "", "title": "", "phone": ""})
             st.rerun()
 
         for k in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email", "it_phone",
@@ -1637,6 +1964,8 @@ with tab1:
     col1, col2 = st.columns([1, 2])
     
     with col1:
+        if st.session_state.get("survey_photo_upload"):
+            uploaded_files, client_name, proximity_radius = _render_survey_upload_block(proximity_radius, compact=True)
         if st.session_state.processed_sites:
             st.subheader("Sites Detected")
             for site in st.session_state.processed_sites:
@@ -1701,7 +2030,7 @@ with tab1:
                     fill=True,
                     fill_color="#ef4444",
                     fill_opacity=0.06,
-                    tooltip=f"2-mile radius â€” {label}",
+                    tooltip=f"2-mile radius — {label}",
                 ).add_to(m)
 
                 # Site marker
@@ -1762,7 +2091,7 @@ with tab1:
                 st.subheader("Site Assessment Checklists")
                 for i, csite in enumerate(st.session_state.candidate_sites, start=1):
                     _render_site_checklist(csite, i)
-            # Report generation & Drive upload â€” single combined action
+            # Report generation and Drive upload are separate actions.
             st.subheader("Report Generation & Upload")
             with st.expander("Report Contact Preview", expanded=False):
                 preview_rows = _report_contact_preview_rows()
@@ -1775,8 +2104,8 @@ with tab1:
                 value=True,
                 key="use_new_report",
             )
-            if st.button("📄 Build Report & Upload to Drive", width="stretch"):
-                with st.status("Building report & uploading...", expanded=True) as report_status:
+            if st.button("📄 Build Survey Document", width="stretch"):
+                with st.status("Building report...", expanded=True) as report_status:
                     try:
                         survey_date = _derive_survey_date_from_sites(st.session_state.processed_sites)
                         surveyor = google_oauth.get_user_email() or st.session_state.customer_info.get("surveyor", "")
@@ -1798,56 +2127,6 @@ with tab1:
 
                         # Save report in subfolder
                         report_path = os.path.join(report_subfolder, report_name)
-
-                        # Get Drive manager for report upload
-                        report_drive = None
-                        try:
-                            report_drive = get_drive_manager()
-                        except Exception:
-                            pass
-
-                        # Upload raw images to Drive if authenticated and not yet uploaded
-                        if report_drive and uploaded_files and not st.session_state.get("client_folder_id"):
-                            report_status.update(label="Uploading images to Google Drive...")
-                            report_status.write("📂 Creating Drive folder structure...")
-                            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                            agency = st.session_state.customer_info.get("agency_name", client_name)
-                            client_folder_name = f"{agency.replace(' ', '_')}_{timestamp}"
-                            client_fid = report_drive.get_or_create_folder(team_folder_id, client_folder_name)
-
-                            raw_fid = report_drive.get_or_create_folder(client_fid, "01_Raw_Images")
-                            proc_fid = report_drive.get_or_create_folder(client_fid, "02_Processed_Sites")
-
-                            raw_image_folder_ids = {}
-                            for site in st.session_state.processed_sites:
-                                site_folder_name = processor._drive_site_folder_name(
-                                    site.get("address"),
-                                    site.get("site_id"),
-                                )
-                                site_raw_fid = report_drive.get_or_create_folder(raw_fid, site_folder_name)
-                                for img in site.get("images", []):
-                                    filename = img.get("filename")
-                                    if filename and filename not in raw_image_folder_ids:
-                                        raw_image_folder_ids[filename] = site_raw_fid
-
-                            total_upload = len(uploaded_files)
-                            upload_line = st.empty()
-                            for idx, uploaded_file in enumerate(uploaded_files):
-                                upload_line.write(f"☁️ Uploading image {idx+1}/{total_upload}: {uploaded_file.name}")
-                                temp_path = os.path.join(tempfile.gettempdir(), uploaded_file.name)
-                                with open(temp_path, "wb") as f:
-                                    f.write(uploaded_file.getbuffer())
-                                target_raw_folder = raw_image_folder_ids.get(uploaded_file.name, raw_fid)
-                                report_drive.upload_file(temp_path, target_raw_folder)
-
-                            st.session_state.client_folder_id = client_fid
-                            st.session_state.raw_images_folder_id = raw_fid
-                            st.session_state.processed_folder_id = proc_fid
-                            st.session_state.reports_folder_id = client_fid
-                            st.session_state.metadata_folder_id = client_fid
-                            st.session_state.client_name = agency
-                            st.session_state.drive_folder_url = f"https://drive.google.com/drive/folders/{client_fid}"
-                            report_status.write(f"✅ Uploaded {total_upload} images to Drive")
 
                         report_status.update(label="Generating report document...")
                         def _report_progress(step):
@@ -1878,42 +2157,6 @@ with tab1:
                             candidate_sites=st.session_state.candidate_sites if st.session_state.candidate_sites else None,
                         )
 
-                        if report_drive and st.session_state.get("reports_folder_id"):
-                            report_status.write("☁️ Uploading report to Google Drive...")
-                            report_drive.upload_file(
-                                report_path,
-                                st.session_state.reports_folder_id,
-                                file_name=os.path.basename(report_path),
-                            )
-                            try:
-                                report_drive.upload_file(
-                                    kmz_path,
-                                    st.session_state.reports_folder_id,
-                                    file_name=os.path.basename(kmz_path),
-                                )
-                            except Exception:
-                                pass
-
-                        # Upload exports to Drive if authenticated
-                        if st.session_state.candidate_sites and report_drive and st.session_state.get("metadata_folder_id"):
-                            report_status.write("📤 Uploading JSON & CSV exports to Drive...")
-                            try:
-                                _json_path = os.path.join(report_subfolder, "survey_export.json")
-                                export_sites_json(st.session_state.candidate_sites, _json_path)
-                                report_drive.upload_file(_json_path, st.session_state.metadata_folder_id)
-                            except Exception:
-                                pass
-                            try:
-                                _csv_path = os.path.join(report_subfolder, "survey_export.csv")
-                                export_sites_csv(st.session_state.candidate_sites, _csv_path)
-                                report_drive.upload_file(_csv_path, st.session_state.metadata_folder_id)
-                            except Exception:
-                                pass
-
-                        # Update Drive folder URL if we have the folder ID
-                        if st.session_state.get("client_folder_id"):
-                            st.session_state.drive_folder_url = f"https://drive.google.com/drive/folders/{st.session_state.client_folder_id}"
-
                         report_status.update(label="Report generated successfully!", state="complete", expanded=False)
                     except Exception as e:
                         report_status.update(label="Report generation failed", state="error")
@@ -1922,7 +2165,100 @@ with tab1:
                 if st.session_state.get("generated_report"):
                     st.success(f"Generated report: `{st.session_state.generated_report}`")
 
-            # Persistent export buttons â€” survive reruns
+            if st.session_state.get("generated_report") and st.session_state.candidate_sites:
+                if st.button("☁️ Upload Generated Report to Drive", width="stretch"):
+                    with st.status("Uploading report to Google Drive...", expanded=True) as upload_status:
+                        try:
+                            report_path = st.session_state.generated_report
+                            if not os.path.exists(report_path):
+                                raise FileNotFoundError(f"Generated report not found: {report_path}")
+
+                            report_subfolder = os.path.dirname(report_path)
+                            report_drive = get_drive_manager()
+                            if not report_drive:
+                                raise RuntimeError("Google Drive is not connected.")
+
+                            if uploaded_files and not st.session_state.get("client_folder_id"):
+                                upload_status.update(label="Preparing Drive folder structure...")
+                                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                                agency = st.session_state.customer_info.get("agency_name", client_name)
+                                client_folder_name = f"{agency.replace(' ', '_')}_{timestamp}"
+                                client_fid = report_drive.get_or_create_folder(team_folder_id, client_folder_name)
+
+                                raw_fid = report_drive.get_or_create_folder(client_fid, "01_Raw_Images")
+                                proc_fid = report_drive.get_or_create_folder(client_fid, "02_Processed_Sites")
+
+                                raw_image_folder_ids = {}
+                                for site in st.session_state.processed_sites:
+                                    site_folder_name = processor._drive_site_folder_name(
+                                        site.get("address"),
+                                        site.get("site_id"),
+                                    )
+                                    site_raw_fid = report_drive.get_or_create_folder(raw_fid, site_folder_name)
+                                    for img in site.get("images", []):
+                                        filename = img.get("filename")
+                                        if filename and filename not in raw_image_folder_ids:
+                                            raw_image_folder_ids[filename] = site_raw_fid
+
+                                total_upload = len(uploaded_files)
+                                upload_line = st.empty()
+                                for idx, uploaded_file in enumerate(uploaded_files):
+                                    upload_line.write(f"☁️ Uploading image {idx+1}/{total_upload}: {uploaded_file.name}")
+                                    temp_path = os.path.join(tempfile.gettempdir(), uploaded_file.name)
+                                    with open(temp_path, "wb") as f:
+                                        f.write(uploaded_file.getbuffer())
+                                    target_raw_folder = raw_image_folder_ids.get(uploaded_file.name, raw_fid)
+                                    report_drive.upload_file(temp_path, target_raw_folder)
+
+                                st.session_state.client_folder_id = client_fid
+                                st.session_state.raw_images_folder_id = raw_fid
+                                st.session_state.processed_folder_id = proc_fid
+                                st.session_state.reports_folder_id = client_fid
+                                st.session_state.metadata_folder_id = client_fid
+                                st.session_state.client_name = agency
+                                st.session_state.drive_folder_url = f"https://drive.google.com/drive/folders/{client_fid}"
+                                upload_status.write(f"✅ Uploaded {total_upload} images to Drive")
+
+                            upload_status.write("📤 Uploading report and exports to Drive...")
+                            report_drive.upload_file(
+                                report_path,
+                                st.session_state.get("reports_folder_id") or st.session_state.get("client_folder_id"),
+                                file_name=os.path.basename(report_path),
+                            )
+                            try:
+                                kmz_path = os.path.splitext(report_path)[0] + ".kmz"
+                                if os.path.exists(kmz_path):
+                                    report_drive.upload_file(
+                                        kmz_path,
+                                        st.session_state.get("reports_folder_id") or st.session_state.get("client_folder_id"),
+                                        file_name=os.path.basename(kmz_path),
+                                    )
+                            except Exception:
+                                pass
+
+                            if st.session_state.candidate_sites and st.session_state.get("metadata_folder_id"):
+                                try:
+                                    _json_path = os.path.join(report_subfolder, "survey_export.json")
+                                    export_sites_json(st.session_state.candidate_sites, _json_path)
+                                    report_drive.upload_file(_json_path, st.session_state.metadata_folder_id)
+                                except Exception:
+                                    pass
+                                try:
+                                    _csv_path = os.path.join(report_subfolder, "survey_export.csv")
+                                    export_sites_csv(st.session_state.candidate_sites, _csv_path)
+                                    report_drive.upload_file(_csv_path, st.session_state.metadata_folder_id)
+                                except Exception:
+                                    pass
+
+                            if st.session_state.get("client_folder_id"):
+                                st.session_state.drive_folder_url = f"https://drive.google.com/drive/folders/{st.session_state.client_folder_id}"
+
+                            upload_status.update(label="Report uploaded successfully!", state="complete", expanded=False)
+                        except Exception as e:
+                            upload_status.update(label="Upload failed", state="error")
+                            st.error(f"Drive upload error: {e}")
+
+            # Persistent export buttons — survive reruns
             if st.session_state.get("generated_report") and st.session_state.candidate_sites:
                 report_path = st.session_state.generated_report
                 if os.path.exists(report_path):

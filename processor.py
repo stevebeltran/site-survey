@@ -2,6 +2,7 @@ import os
 import shutil
 import datetime
 import logging
+import tempfile
 
 from site_model import CandidateSite, SiteIdentity, SurveyPhoto, categorize_photo_by_filename
 
@@ -18,7 +19,7 @@ try:
 except Exception:
     pillow_heif = None
 
-from PIL import Image
+from PIL import Image, ImageOps
 from PIL.ExifTags import TAGS, GPSTAGS
 from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
@@ -186,44 +187,6 @@ def cluster_images(images_meta, radius_meters=90.0):
         clusters.append([gps_images[idx] for idx in sorted(cluster_indices)])
 
     return clusters
-
-def cluster_images_dbscan(images_meta, eps_meters=90.0, min_samples=1):
-    """Cluster images by GPS proximity using DBSCAN.
-
-    Args:
-        images_meta: list of dicts with 'path', 'lat', 'lon', 'time' keys.
-        eps_meters: maximum distance in meters between points in same cluster.
-        min_samples: minimum images to form a cluster (default 1 = no noise).
-
-    Returns:
-        list of lists, each inner list is a cluster of image meta dicts.
-    """
-    if not images_meta:
-        return []
-
-    gps_images = [m for m in images_meta if m.get("lat") is not None and m.get("lon") is not None]
-    if not gps_images:
-        return []
-
-    import numpy as np
-    from sklearn.cluster import DBSCAN
-
-    coords_rad = np.array([[np.radians(m["lat"]), np.radians(m["lon"])] for m in gps_images])
-    eps_rad = eps_meters / 6371000.0
-
-    db = DBSCAN(eps=eps_rad, min_samples=min_samples, metric="haversine")
-    labels = db.fit_predict(coords_rad)
-
-    clusters_dict = {}
-    for img, label in zip(gps_images, labels):
-        if label == -1:
-            noise_key = f"noise_{id(img)}"
-            clusters_dict[noise_key] = [img]
-        else:
-            clusters_dict.setdefault(label, []).append(img)
-
-    return list(clusters_dict.values())
-
 
 def split_clusters_by_time_gap(clusters, gap_minutes=10, min_spatial_meters=50):
     """Split clusters where consecutive photos have both a large time gap and spatial separation.
@@ -524,6 +487,41 @@ def _drive_site_folder_name(full_address, site_id=None):
     return "Site"
 
 
+def _prepare_drive_image_upload(src_path, work_dir, max_side=2400, jpeg_quality=82):
+    """Create a smaller Drive-only copy of an image when possible."""
+    if not os.path.exists(src_path):
+        return src_path, os.path.basename(src_path)
+
+    try:
+        with Image.open(src_path) as src_img:
+            image = ImageOps.exif_transpose(src_img)
+            image.thumbnail((max_side, max_side), Image.LANCZOS)
+
+            has_alpha = (
+                image.mode in ("RGBA", "LA")
+                or (image.mode == "P" and "transparency" in image.info)
+            )
+            base_name = os.path.splitext(os.path.basename(src_path))[0]
+            if has_alpha:
+                output_path = os.path.join(work_dir, f"{base_name}_drive.png")
+                image.save(output_path, format="PNG", optimize=True)
+            else:
+                output_path = os.path.join(work_dir, f"{base_name}_drive.jpg")
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                image.save(
+                    output_path,
+                    format="JPEG",
+                    quality=jpeg_quality,
+                    optimize=True,
+                    progressive=True,
+                )
+            return output_path, os.path.basename(output_path)
+    except Exception as e:
+        print(f"Drive image compression skipped for {src_path}: {e}")
+        return src_path, os.path.basename(src_path)
+
+
 def _derive_department_folder_name(full_address=None, agency_name=None):
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -634,7 +632,7 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
             
     # Cluster images with GPS
     _report_progress(65, "Clustering GPS-tagged images...")
-    clusters = cluster_images_dbscan(images_meta, eps_meters=radius_meters)
+    clusters = cluster_images(images_meta, radius_meters=radius_meters)
     clusters = split_clusters_by_time_gap(clusters)
     clusters = [c for c in clusters if len(c) >= MIN_SITE_PHOTOS]
 
@@ -706,6 +704,7 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
 
     # If using Google Drive, upload processed files
     if drive_manager and drive_output_folder_id:
+        drive_upload_dir = tempfile.mkdtemp(prefix="dfr_drive_uploads_")
         try:
             for site in site_data:
                 # Upload site folder structure to Drive
@@ -721,14 +720,21 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
                 # Upload images from this site
                 for img in site.get('images', []):
                     if 'dest_path' in img and os.path.exists(img['dest_path']):
-                        drive_manager.upload_file(
+                        upload_path, upload_name = _prepare_drive_image_upload(
                             img['dest_path'],
-                            drive_site_folder_id
+                            drive_upload_dir,
+                        )
+                        drive_manager.upload_file(
+                            upload_path,
+                            drive_site_folder_id,
+                            file_name=upload_name,
                         )
         except ValueError as e:
             print(f"Drive upload error: {e}")
         except Exception as e:
             print(f"Unexpected error during Drive upload: {e}")
+        finally:
+            shutil.rmtree(drive_upload_dir, ignore_errors=True)
 
     _report_progress(100, "EXIF scan and clustering complete.")
     return site_data

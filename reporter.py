@@ -1031,6 +1031,50 @@ def _format_scalar_contact(customer_info, key, default="DNA"):
     return value if value else default
 
 
+def _normalized_contact_rows(customer_info):
+    """Return contact rows for reporting, defaulting missing roles to Other."""
+    rows = []
+    for row in (customer_info or {}).get("contacts", []):
+        role = str(row.get("role", "") or "").strip() or "Other"
+        name = str(row.get("name", "") or "").strip()
+        title = str(row.get("title", "") or "").strip()
+        email = str(row.get("email", "") or "").strip()
+        phone = str(row.get("phone", "") or "").strip()
+        if not any((role, name, title, email, phone)):
+            continue
+        rows.append((role, name or "DNA", title or "DNA", email or "DNA", phone or "DNA"))
+    return rows
+
+
+def _add_contacts_table(doc, customer_info):
+    """Append the full contact roster so non-primary roles are preserved in the report."""
+    rows = _normalized_contact_rows(customer_info)
+    if not rows:
+        return
+
+    doc.add_paragraph().add_run("POINTS OF CONTACT").bold = True
+    table = doc.add_table(rows=len(rows) + 1, cols=5)
+    table.style = "Table Grid"
+
+    headers = ["Role", "Name", "Title / Rank", "Email", "Phone"]
+    for idx, header in enumerate(headers):
+        table.rows[0].cells[idx].text = header
+
+    for row_idx, row in enumerate(rows, start=1):
+        for col_idx, value in enumerate(row):
+            table.rows[row_idx].cells[col_idx].text = value
+
+    _style_polished_table(
+        table,
+        widths=[Inches(1.0), Inches(1.45), Inches(1.6), Inches(1.75), Inches(1.1)],
+        header_fill="FFFFFF",
+    )
+    for row in table.rows:
+        for cell in row.cells:
+            _style_table_cell(cell, bold=False, font_size=10, color=RGBColor(0, 0, 0), align=WD_ALIGN_PARAGRAPH.LEFT)
+    doc.add_paragraph()
+
+
 def _add_poc_table(doc, customer_info):
     """Build a polished 2-column general information table that mirrors the reference document."""
     customer_info = customer_info or {}
@@ -1082,6 +1126,7 @@ def _add_poc_table(doc, customer_info):
         _style_table_cell(row.cells[0], bold=False, font_size=11, color=RGBColor(0, 0, 0), align=WD_ALIGN_PARAGRAPH.LEFT)
         _style_table_cell(row.cells[1], bold=False, font_size=11, color=RGBColor(0, 0, 0), align=WD_ALIGN_PARAGRAPH.LEFT)
     doc.add_paragraph()
+    _add_contacts_table(doc, customer_info)
 
 
 def generate_word_report(site_data_list, output_filepath, customer_info=None, drive_manager=None, drive_reports_folder_id=None, progress_callback=None):
@@ -1119,6 +1164,7 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
             "it_email": "",
             "facilities_engineer": "",
             "facilities_email": "",
+            "contacts": [],
             "report_date": datetime.date.today().strftime("%B %d, %Y"),
         }
     survey_date = _extract_survey_date(site_data_list=site_data_list, customer_info=customer_info)
