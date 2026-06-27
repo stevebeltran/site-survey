@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from google_drive import get_drive_manager
 from gmail_lookup import search_gmail_for_contacts
 from agency_docs import fetch_agency_docs_parallel
+from dashboard_metrics import count_connected_sources, count_contacts
 import google_oauth
 
 try:
@@ -395,6 +396,8 @@ def _save_session_metadata(site_data):
     for site in site_data:
         # Save customer info into the site payload for history loading
         site["customer_info"] = st.session_state.customer_info
+        # Preserve the derived connected contacts list so it survives reloads.
+        site["agency_contacts"] = st.session_state.get("agency_contacts", [])
         folder_path = site.get("folder_path")
         if folder_path and os.path.exists(folder_path):
             metadata_path = os.path.join(folder_path, "session_metadata.json")
@@ -466,6 +469,19 @@ def _get_displayable_image_path(image_path, site_folder=None):
     except Exception as e:
         print(f"Image preview unavailable for {image_path}: {e}")
         return None
+
+
+@st.cache_data(show_spinner=False)
+def _list_available_images(images_dir):
+    """Return the reusable image assets available for image placement."""
+    if not os.path.exists(images_dir):
+        return []
+
+    return sorted(
+        img_file
+        for img_file in os.listdir(images_dir)
+        if img_file.lower().endswith(('.png', '.jpg', '.jpeg'))
+    )
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -599,11 +615,7 @@ def _mission_overview():
     customer_info = st.session_state.get("customer_info", {})
     uploaded_count = int(st.session_state.get("_last_uploaded_file_count", 0) or 0)
     agency_name = customer_info.get("agency_name", "").strip()
-    connected_sources = sum(
-        1
-        for key in ("drive_gemini_results", "jira_results", "hubspot_results", "calendar_results")
-        if st.session_state.get(key, {}).get("status") in ("connected",)
-    )
+    connected_sources = count_connected_sources(st.session_state)
 
     if processed_sites:
         stage = "Review"
@@ -645,15 +657,111 @@ def _current_stage_next_action():
     return "Sync the final report package to Drive."
 
 
+def render_poc_table(contacts: list):
+    """
+    Render a POC table organized by role.
+
+    Takes a list of contacts with poc_role assigned and displays them in a table
+    with one row per POC role. Shows "DNA" if no contact matches a role.
+
+    Args:
+        contacts: List of contact dicts with keys: name, email, title, phone, poc_role
+    """
+    poc_roles = [
+        "Information Technology",
+        "Facilities Engineer",
+        "Radio Shop Engineer",
+        "RTCC/RTIC",
+        "Crane Contractor",
+        "Tower Climber Contractor",
+        "BRINC Project Manager",
+        "Other"
+    ]
+
+    rows = []
+    for role in poc_roles:
+        # Find first contact matching this role
+        matching = [c for c in contacts if c.get("poc_role") == role]
+        if matching:
+            contact = matching[0]
+            rows.append({
+                "Role": role,
+                "Name": contact.get("name", "DNA"),
+                "Phone": contact.get("phone", "DNA"),
+                "Email": contact.get("email", "DNA"),
+                "Title": contact.get("title", "DNA")
+            })
+        else:
+            rows.append({
+                "Role": role,
+                "Name": "DNA",
+                "Phone": "DNA",
+                "Email": "DNA",
+                "Title": "DNA"
+            })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+def render_drive_docs_table(docs: list):
+    """
+    Render a Drive documents table.
+
+    Shows document name, owner, and last modified date. If no documents,
+    displays an info message.
+
+    Args:
+        docs: List of document dicts with keys: name, owner, last_modified, url
+    """
+    if not docs:
+        st.info("No documents found for this department.")
+        return
+
+    rows = []
+    for doc in docs:
+        rows.append({
+            "Document Name": doc.get("name", "Unknown"),
+            "Owner": doc.get("owner", "Unknown"),
+            "Last Modified": doc.get("last_modified", "Unknown")
+        })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+def render_calendar_events_table(events: list):
+    """
+    Render a calendar events table.
+
+    Shows event name, date, time, and attendee count. If no events,
+    displays an info message.
+
+    Args:
+        events: List of event dicts with keys: name, date, time, attendee_count
+    """
+    if not events:
+        st.info("No calendar events found for this department.")
+        return
+
+    rows = []
+    for event in events:
+        rows.append({
+            "Event Name": event.get("name", "Unknown"),
+            "Date": event.get("date", "Unknown"),
+            "Time": event.get("time", "Unknown"),
+            "Attendees": event.get("attendee_count", 0)
+        })
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
 def _render_kpi_cards():
     """Render the top-level mission KPIs."""
     overview = _mission_overview()
-    connected_sources = sum(
-        1
-        for key in ("drive_gemini_results", "jira_results", "hubspot_results", "calendar_results")
-        if st.session_state.get(key, {}).get("status") in ("connected",)
-    )
-    contacts_count = len(st.session_state.customer_info.get("contacts", [])) + len(st.session_state.agency_contacts)
+    connected_sources = count_connected_sources(st.session_state)
+    contacts_count = count_contacts(st.session_state)
     cols = st.columns(4)
     metrics = [
         ("Loaded Sites", overview["sites"], None),
@@ -938,6 +1046,10 @@ with st.sidebar:
                                     st.session_state.active_bg_image = loaded_site["images"][0]["filename"]
                                 if "customer_info" in loaded_site:
                                     st.session_state.customer_info = loaded_site["customer_info"]
+                                loaded_contacts = loaded_site.get("agency_contacts", [])
+                                if not loaded_contacts:
+                                    loaded_contacts = st.session_state.customer_info.get("contacts", [])
+                                st.session_state.agency_contacts = loaded_contacts
                                 st.success(f"Loaded session for {display_name}")
                                 st.rerun()
                             except Exception as e:
@@ -1008,9 +1120,10 @@ def _render_survey_upload_block(current_proximity_radius: int, compact: bool = F
                     else:
                         st.session_state.gps_detected_agency = {}
 
-            # Trigger parallel agency docs lookup if GPS set department_name and we haven't fetched yet
+            # Trigger parallel agency docs lookup once per agency name.
             agency_name = st.session_state.customer_info.get("agency_name", "").strip()
-            if agency_name and not st.session_state.agency_contacts:
+            last_doc_search_agency = st.session_state.get("_last_doc_search_agency", "")
+            if agency_name and agency_name != last_doc_search_agency and not st.session_state.agency_docs_loading:
                 st.session_state.agency_docs_loading = True
                 try:
                     # Extract domain from agency address or leave empty
@@ -1029,6 +1142,7 @@ def _render_survey_upload_block(current_proximity_radius: int, compact: bool = F
                     st.session_state.agency_docs_errors["fetch"] = str(e)
                 finally:
                     st.session_state.agency_docs_loading = False
+                    st.session_state._last_doc_search_agency = agency_name
 
             suggested_name = st.session_state.get("gps_detected_agency", {}).get("agency_name", "")
             client_name = st.text_input(
@@ -1254,11 +1368,21 @@ with st.container(border=True):
             st.metric("Contacts", len(st.session_state.customer_info.get("contacts", [])))
 
     with agency_tabs[1]:
+        st.markdown("**Connected POCs**")
+        agency_contacts = st.session_state.get("agency_contacts", [])
+        if agency_contacts:
+            render_poc_table(agency_contacts)
+        elif st.session_state.get("agency_docs_loading"):
+            st.info("Connected docs lookup in progress.")
+        else:
+            st.info("No connected contacts found yet.")
+
+        st.markdown("**Manual Contacts**")
         contacts_df = pd.DataFrame(st.session_state.customer_info.get("contacts", []))
         if not contacts_df.empty:
             st.dataframe(contacts_df, use_container_width=True, hide_index=True)
         else:
-            st.info("No contacts loaded yet. Use the Survey Pipeline tab or Gmail lookup to populate contacts.")
+            st.info("No manual contacts loaded yet. Use the Survey Pipeline tab or Gmail lookup to populate contacts.")
         st.caption("Contact editing remains available in the Survey Pipeline for compatibility.")
 
     with agency_tabs[2]:
@@ -1339,6 +1463,8 @@ with st.container(border=True):
                         st.caption(f"- {title}")
             else:
                 st.caption("No connected documents yet.")
+            st.markdown("**Drive Search Results**")
+            render_drive_docs_table(st.session_state.get("agency_docs", []))
         with docs_cols[1]:
             st.markdown("**Jira / HubSpot / Calendar**")
             jira_status = st.session_state.get("jira_results", {}).get("status", "idle")
@@ -1347,6 +1473,10 @@ with st.container(border=True):
             st.metric("Jira", jira_status)
             st.metric("HubSpot", hs_status)
             st.metric("Calendar", cal_status)
+            st.markdown("**Calendar Events**")
+            render_calendar_events_table(st.session_state.get("agency_calendar", []))
+            if st.session_state.get("agency_docs_errors"):
+                st.caption(f"Lookup issues: {st.session_state.agency_docs_errors}")
 
 # Auto-process on upload - runs once per file set, no manual button needed
 if uploaded_files and not st.session_state.get("_auto_processed"):
@@ -1681,6 +1811,8 @@ def _render_annotator_workspace(selected_site):
 
     st.markdown("##### Select Background Photo:")
     images_list = selected_site.get('images', [])
+    if images_list and st.session_state.active_bg_image not in {img.get('filename') for img in images_list}:
+        st.session_state.active_bg_image = images_list[0]['filename']
     cols_per_row = 6
     for i in range(0, len(images_list), cols_per_row):
         chunk = images_list[i:i+cols_per_row]
@@ -1697,12 +1829,8 @@ def _render_annotator_workspace(selected_site):
                     if st.button(btn_label, key=f"sel_thumb_{selected_site['site_id']}_{global_idx}", width="stretch"):
                         st.session_state.active_bg_image = img['filename']
                         st.session_state.last_click[selected_site['site_id']] = None
-                        st.rerun()
                 else:
                     st.caption(f"Error: {img['filename'][:8]}...")
-
-    if not st.session_state.active_bg_image and selected_site.get('images'):
-        st.session_state.active_bg_image = selected_site['images'][0]['filename']
 
     if not st.session_state.active_bg_image:
         st.warning("Please upload or process images first to mark up.")
@@ -1746,12 +1874,7 @@ def _render_annotator_workspace(selected_site):
         )
 
     images_dir = os.path.join(os.path.dirname(__file__), "images")
-    available_images = []
-    if os.path.exists(images_dir):
-        for img_file in os.listdir(images_dir):
-            if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
-                available_images.append(img_file)
-    available_images.sort()
+    available_images = _list_available_images(images_dir)
 
     st.markdown("##### Placement Customization (To place on image click)")
     node_type_options = {
@@ -1857,7 +1980,6 @@ def _render_annotator_workspace(selected_site):
                     )
                     _save_session_metadata(st.session_state.processed_sites)
                     st.success(success_msg)
-                    st.rerun()
             except Exception as e:
                 st.error(f"Error registering click: {e}")
 
@@ -1891,7 +2013,6 @@ def _render_annotator_workspace(selected_site):
                     elif os.path.exists(output_drawing_path):
                         os.remove(output_drawing_path)
                     _save_session_metadata(st.session_state.processed_sites)
-                    st.rerun()
     else:
         st.caption("No markers placed yet.")
 
@@ -1907,7 +2028,6 @@ def _render_annotator_workspace(selected_site):
                 os.remove(output_drawing_path)
             _save_session_metadata(st.session_state.processed_sites)
             st.warning("Cleared all nodes and images for this photo.")
-            st.rerun()
 
         if st.button("🔄 Refresh Rendering", key=f"int_redraw_{selected_site['site_id']}", width="stretch"):
             reporter.create_engineering_drawing(
@@ -1920,7 +2040,6 @@ def _render_annotator_workspace(selected_site):
                 images_dir=images_dir
             )
             _save_session_metadata(st.session_state.processed_sites)
-            st.rerun()
 
     if os.path.exists(output_drawing_path):
         st.image(output_drawing_path, caption="Active Engineering Markup Layout Preview", width="stretch")
