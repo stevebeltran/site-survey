@@ -3,6 +3,7 @@ import json
 import re
 import subprocess
 import tempfile
+from html import escape
 import streamlit as st
 import pandas as pd
 from PIL import Image
@@ -31,6 +32,7 @@ from streamlit_folium import st_folium
 import processor
 import analyzer
 import reporter
+from contact_rows import build_initial_poc_rows, sync_customer_info_from_poc_rows
 from site_model import CandidateSite, export_sites_json, export_sites_csv
 from processor import cluster_images, split_clusters_by_time_gap, cluster_to_candidate_sites, MIN_SITE_PHOTOS
 from analyzer import enrich_gis
@@ -206,6 +208,45 @@ st.markdown("""
         padding: 16px;
         margin-bottom: 15px;
     }
+    .sidebar-activity {
+        border-radius: 14px;
+        padding: 0.8rem 0.9rem;
+        margin-bottom: 0.85rem;
+        border: 1px solid #CBD5E1;
+        background: #F8FAFC;
+        color: #0F172A;
+    }
+    .sidebar-activity.running {
+        border-color: #93C5FD;
+        background: linear-gradient(135deg, #EFF6FF 0%, #F8FAFC 100%);
+    }
+    .sidebar-activity.complete {
+        border-color: #86EFAC;
+        background: linear-gradient(135deg, #ECFDF5 0%, #F8FAFC 100%);
+    }
+    .sidebar-activity.error {
+        border-color: #FCA5A5;
+        background: linear-gradient(135deg, #FEF2F2 0%, #F8FAFC 100%);
+    }
+    .sidebar-activity .eyebrow {
+        font-size: 0.68rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #64748B;
+        font-weight: 700;
+        margin-bottom: 0.25rem;
+    }
+    .sidebar-activity .title {
+        font-size: 0.95rem;
+        font-weight: 700;
+        line-height: 1.25;
+        margin-bottom: 0.2rem;
+    }
+    .sidebar-activity .detail {
+        font-size: 0.8rem;
+        color: #475569;
+        line-height: 1.35;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -285,9 +326,16 @@ if "agency_docs_loading" not in st.session_state:
     st.session_state.agency_docs_loading = False
 if "agency_docs_errors" not in st.session_state:
     st.session_state.agency_docs_errors = {}
+if "sidebar_activity" not in st.session_state:
+    st.session_state.sidebar_activity = {
+        "state": "idle",
+        "label": "Idle",
+        "detail": "Waiting for the next task.",
+    }
 
 SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tiff", ".webp", ".heic", ".heif")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+_sidebar_activity_placeholder = None
 
 def _resolve_app_path(path):
     """Resolve relative paths against the dashboard file location."""
@@ -424,6 +472,44 @@ def _format_integration_log(entry):
     return str(entry)
 
 
+def _render_sidebar_activity():
+    """Render the current task activity card at the top of the sidebar."""
+    if _sidebar_activity_placeholder is None:
+        return
+
+    activity = st.session_state.get("sidebar_activity", {})
+    state = activity.get("state", "idle")
+    label = escape(str(activity.get("label", "Idle")))
+    detail = escape(str(activity.get("detail", "Waiting for the next task.")))
+    badge = {
+        "idle": "Status",
+        "running": "In Progress",
+        "complete": "Completed",
+        "error": "Attention",
+    }.get(state, "Status")
+
+    _sidebar_activity_placeholder.markdown(
+        f"""
+        <div class="sidebar-activity {state}">
+            <div class="eyebrow">{badge}</div>
+            <div class="title">{label}</div>
+            <div class="detail">{detail}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _set_sidebar_activity(label, detail="", state="running"):
+    """Persist and render the current long-running activity for the sidebar."""
+    st.session_state.sidebar_activity = {
+        "state": state,
+        "label": label,
+        "detail": detail or "",
+    }
+    _render_sidebar_activity()
+
+
 def _get_displayable_image_path(image_path, site_folder=None):
     """Return a browser-safe image path for Streamlit display, or None if unreadable.
 
@@ -526,8 +612,13 @@ def _run_connected_docs_search(agency, city=""):
     from gmail_lookup import search_drive_for_gemini_notes, search_jira_for_tickets, search_hubspot_for_records, search_calendar_for_events
 
     found_any = False
+    _set_sidebar_activity(
+        "Looking up connected docs",
+        f"Searching Gmail, Drive, Jira, HubSpot, and Calendar for {agency}.",
+    )
 
     # Gmail contacts
+    _set_sidebar_activity("Looking up connected docs", f"Searching Gmail contacts for {agency}.")
     contacts = _lookup_contacts_from_gmail(agency, city)
     contact_status = contacts.get("status", "no_results") if contacts else "no_results"
     if contact_status == "connected":
@@ -545,6 +636,7 @@ def _run_connected_docs_search(agency, city=""):
         _append_integration_log(f"[Gmail API] No contacts found for {agency}")
 
     # Drive: Gemini notes & folders
+    _set_sidebar_activity("Looking up connected docs", f"Searching Google Drive for {agency}.")
     drive_results = search_drive_for_gemini_notes(agency, city)
     drive_status = drive_results.get("status", "no_results")
     if drive_status == "connected":
@@ -563,6 +655,7 @@ def _run_connected_docs_search(agency, city=""):
         _append_integration_log(f"[Drive API] Auth error: {drive_results.get('error', '')}")
 
     # Jira tickets
+    _set_sidebar_activity("Looking up connected docs", f"Searching Jira for {agency}.")
     jira_results = search_jira_for_tickets(
         agency,
         jira_url=st.session_state.get("_jira_url", ""),
@@ -579,6 +672,7 @@ def _run_connected_docs_search(agency, city=""):
         _append_integration_log(f"[Jira API] Error: {jira_results['error']}")
 
     # HubSpot records
+    _set_sidebar_activity("Looking up connected docs", f"Searching HubSpot for {agency}.")
     hubspot_results = search_hubspot_for_records(
         agency,
         hubspot_token=st.session_state.get("_hubspot_token", ""),
@@ -595,6 +689,7 @@ def _run_connected_docs_search(agency, city=""):
         _append_integration_log(f"[HubSpot API] Error: {hubspot_results['error']}")
 
     # Calendar events
+    _set_sidebar_activity("Looking up connected docs", f"Searching Calendar events for {agency}.")
     calendar_results = search_calendar_for_events(agency, city)
     st.session_state["calendar_results"] = calendar_results
     if calendar_results["status"] == "connected":
@@ -606,6 +701,11 @@ def _run_connected_docs_search(agency, city=""):
         _append_integration_log(f"[Calendar API] Auth error: {calendar_results.get('error', '')}")
 
     st.session_state._last_doc_search_agency = agency
+    _set_sidebar_activity(
+        "Connected docs lookup complete",
+        f"Finished searching connected systems for {agency}.",
+        state="complete",
+    )
     return found_any
 
 
@@ -958,6 +1058,8 @@ st.markdown(
 
 # Sidebar - Settings & Integration Configs
 with st.sidebar:
+    _sidebar_activity_placeholder = st.empty()
+    _render_sidebar_activity()
     st.image(os.path.join(APP_DIR, "images", "BRINC_Logo_White.png"), width=120)
     output_dir = _resolve_app_path("./processed_sites")
     proximity_radius = 90
@@ -1126,6 +1228,10 @@ def _render_survey_upload_block(current_proximity_radius: int, compact: bool = F
             if agency_name and agency_name != last_doc_search_agency and not st.session_state.agency_docs_loading:
                 st.session_state.agency_docs_loading = True
                 try:
+                    _set_sidebar_activity(
+                        "Looking up connected docs",
+                        f"Preparing searches for {agency_name}.",
+                    )
                     # Extract domain from agency address or leave empty
                     agency_address = st.session_state.customer_info.get("agency_address", "")
                     city_hint = processor.extract_city_from_address(agency_address) if agency_address else ""
@@ -1133,6 +1239,10 @@ def _render_survey_upload_block(current_proximity_radius: int, compact: bool = F
 
                     # Run Gmail lookup first so contacts are available even if the
                     # slower multi-source harvest times out later.
+                    _set_sidebar_activity(
+                        "Looking up connected docs",
+                        f"Searching Gmail contacts for {agency_name}.",
+                    )
                     gmail_result = _lookup_contacts_from_gmail(agency_name, city_hint or None)
                     if gmail_result and gmail_result.get("status") == "connected":
                         found_contacts = gmail_result.get("all_contacts", [])
@@ -1144,6 +1254,10 @@ def _render_survey_upload_block(current_proximity_radius: int, compact: bool = F
                                 st.session_state.customer_info[key] = gmail_result[key]
 
                     # Call parallel fetch in blocking context (will complete before rerun)
+                    _set_sidebar_activity(
+                        "Looking up connected docs",
+                        f"Searching Drive, Calendar, and department contacts for {agency_name}.",
+                    )
                     result = fetch_agency_docs_parallel(
                         agency_name,
                         dept_domain,
@@ -1158,8 +1272,18 @@ def _render_survey_upload_block(current_proximity_radius: int, compact: bool = F
                     st.session_state.agency_docs = result.get("docs", [])
                     st.session_state.agency_calendar = result.get("events", [])
                     st.session_state.agency_docs_errors = result.get("errors", {})
+                    _set_sidebar_activity(
+                        "Connected docs lookup complete",
+                        f"Finished searching connected systems for {agency_name}.",
+                        state="complete",
+                    )
                 except Exception as e:
                     st.session_state.agency_docs_errors["fetch"] = str(e)
+                    _set_sidebar_activity(
+                        "Connected docs lookup failed",
+                        str(e),
+                        state="error",
+                    )
                 finally:
                     st.session_state.agency_docs_loading = False
                     st.session_state._last_doc_search_agency = agency_name
@@ -1203,6 +1327,10 @@ uploaded_files, client_name, proximity_radius = _render_survey_upload_block(
 # dashboard in a stale pre-processing state.
 if uploaded_files and not st.session_state.get("_auto_processed"):
     st.session_state._auto_processed = True
+    _set_sidebar_activity(
+        "Processing survey photos",
+        f"Preparing {len(uploaded_files)} uploaded file(s).",
+    )
 
     with st.container(border=True):
         st.subheader("Processing Status")
@@ -1213,6 +1341,10 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
             def _update_processing_progress(percent, message):
                 status.update(label=f"Processing - {int(percent)}%")
                 _detail_placeholder.write(f"⏳ {message}")
+                _set_sidebar_activity(
+                    f"Processing survey photos ({int(percent)}%)",
+                    message,
+                )
 
             try:
                 st.session_state.processed_sites = []
@@ -1220,6 +1352,10 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                 st.session_state.last_click = {}
 
                 _step_placeholder.write(f"📂 Saving {len(uploaded_files)} uploaded file(s) to disk...")
+                _set_sidebar_activity(
+                    "Processing survey photos",
+                    f"Saving {len(uploaded_files)} uploaded file(s) to disk.",
+                )
                 temp_dir = tempfile.mkdtemp(prefix="dfr_ingest_")
                 image_paths_for_processing = []
                 for uploaded_file in uploaded_files:
@@ -1236,6 +1372,10 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                     pass
 
                 _step_placeholder.write("🔍 Extracting EXIF metadata and clustering by GPS...")
+                _set_sidebar_activity(
+                    "Processing survey photos",
+                    "Extracting EXIF metadata and clustering images by GPS.",
+                )
                 site_data = processor.process_and_organize_images(
                     source_dir=temp_dir,
                     output_dir=output_dir,
@@ -1251,11 +1391,23 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                     st.warning("No images with GPS metadata were found in the uploaded files.")
 
                 _step_placeholder.write(f"🏗️ Analyzing infrastructure for {len(site_data)} site(s)...")
+                _set_sidebar_activity(
+                    "Analyzing detected sites",
+                    f"Running infrastructure analysis for {len(site_data)} site(s).",
+                )
                 for i, site in enumerate(site_data):
                     status.update(label=f"Analyzing site {i+1}/{len(site_data)}")
                     _step_placeholder.write(f"🔎 Site {i+1}: Running infrastructure detection...")
+                    _set_sidebar_activity(
+                        f"Analyzing site {i+1}/{len(site_data)}",
+                        "Running infrastructure detection.",
+                    )
                     site["analysis"] = analyzer.analyze_site(site)
                     _step_placeholder.write(f"✈️ Site {i+1}: Querying airspace & airfield data...")
+                    _set_sidebar_activity(
+                        f"Analyzing site {i+1}/{len(site_data)}",
+                        "Querying airspace and nearest airfield data.",
+                    )
                     airfield = reporter.query_nearest_airfield(site['latitude'], site['longitude'])
                     site["airfield_info"] = f"{airfield[0]} ({airfield[1]:.2f} miles)" if airfield else "Lookup failed"
                     airspace = reporter.query_airspace_class(site["latitude"], site["longitude"])
@@ -1317,6 +1469,10 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                 st.session_state.candidate_sites = []
                 if site_data:
                     status.update(label="Building candidate sites...")
+                    _set_sidebar_activity(
+                        "Building candidate sites",
+                        "Creating candidate-site models from processed survey sites.",
+                    )
                     st.session_state.candidate_sites = [
                         CandidateSite.from_site_dict(s) for s in site_data
                         if len(s.get("images", [])) >= MIN_SITE_PHOTOS
@@ -1325,19 +1481,53 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                     total_cs = len(st.session_state.candidate_sites)
                     for cs_idx, cs in enumerate(st.session_state.candidate_sites, start=1):
                         status.update(label=f"Enriching site {cs_idx}/{total_cs} with GIS data...")
+                        _set_sidebar_activity(
+                            f"Enriching site {cs_idx}/{total_cs}",
+                            "Pulling GIS context and infrastructure overlays.",
+                        )
 
                         def _gis_progress(step, _idx=cs_idx, _total=total_cs):
                             _step_placeholder.write(f"🌐 Site {_idx}/{_total}: {step}")
+                            _set_sidebar_activity(
+                                f"Enriching site {_idx}/{_total}",
+                                step,
+                            )
 
                         enrich_gis(cs, progress_callback=_gis_progress)
 
                 status.update(label="Processing complete!", state="complete", expanded=False)
+                _set_sidebar_activity(
+                    "Processing complete",
+                    f"Processed {len(site_data)} site(s) from {len(uploaded_files)} uploaded file(s).",
+                    state="complete",
+                )
                 st.session_state["_upload_processing_complete"] = True
                 st.rerun()
             except Exception as e:
                 status.update(label="Processing failed", state="error")
                 st.session_state["_upload_processing_complete"] = True
+                _set_sidebar_activity("Processing failed", str(e), state="error")
                 st.error(f"Processing failed: {e}")
+
+if st.session_state.processed_sites:
+    if "_poc_uid_counter" not in st.session_state:
+        st.session_state._poc_uid_counter = 0
+
+    def _next_poc_uid():
+        st.session_state._poc_uid_counter += 1
+        return st.session_state._poc_uid_counter
+
+    if "poc_rows" not in st.session_state:
+        st.session_state.poc_rows = build_initial_poc_rows(
+            st.session_state.customer_info,
+            _next_poc_uid,
+        )
+
+    st.session_state.poc_rows = sync_customer_info_from_poc_rows(
+        st.session_state.customer_info,
+        st.session_state.poc_rows,
+        widget_state=st.session_state,
+    )
 
 # Mission workspace
 _overview = _mission_overview()
@@ -2072,34 +2262,6 @@ with tab1:
     if st.session_state.processed_sites:
         # --- POC / Contacts Table ---
         st.markdown("**Points of Contact**")
-        if "_poc_uid_counter" not in st.session_state:
-            st.session_state._poc_uid_counter = 0
-
-        def _next_poc_uid():
-            st.session_state._poc_uid_counter += 1
-            return st.session_state._poc_uid_counter
-
-        if "poc_rows" not in st.session_state:
-            st.session_state.poc_rows = []
-            if st.session_state.customer_info.get("poc_name") or st.session_state.customer_info.get("poc_email"):
-                st.session_state.poc_rows.append({
-                    "_uid": _next_poc_uid(),
-                    "role": "POC",
-                    "name": st.session_state.customer_info.get("poc_name", ""),
-                    "email": st.session_state.customer_info.get("poc_email", ""),
-                    "title": "",
-                    "phone": st.session_state.customer_info.get("poc_phone", ""),
-                })
-        if st.session_state.customer_info.get("it_director") or st.session_state.customer_info.get("it_email"):
-            st.session_state.poc_rows.append({
-                "_uid": _next_poc_uid(),
-                "role": "IT",
-                "name": st.session_state.customer_info.get("it_director", ""),
-                "email": st.session_state.customer_info.get("it_email", ""),
-                "title": "",
-                "phone": st.session_state.customer_info.get("it_phone", ""),
-            })
-
         gmail_contacts = st.session_state.pop("gmail_found_contacts", None)
         if gmail_contacts:
             existing_emails = {r["email"].lower() for r in st.session_state.poc_rows if r.get("email")}
@@ -2183,44 +2345,11 @@ with tab1:
             st.session_state.poc_rows.append({"_uid": _next_poc_uid(), "role": "Other", "name": "", "email": "", "title": "", "phone": ""})
             st.rerun()
 
-        for k in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email", "it_phone",
-                  "facilities_engineer", "facilities_email", "facilities_phone", "rtcc_name", "rtcc_email", "rtcc_phone",
-                  "radio_shop_name", "radio_shop_email", "radio_shop_phone"):
-            st.session_state.customer_info[k] = ""
-        for row in st.session_state.poc_rows:
-            role = row.get("role", "")
-            if role == "POC" and not st.session_state.customer_info["poc_name"]:
-                st.session_state.customer_info["poc_name"] = row["name"]
-                st.session_state.customer_info["poc_email"] = row["email"]
-                st.session_state.customer_info["poc_phone"] = row.get("phone", "")
-            elif role == "IT" and not st.session_state.customer_info["it_director"]:
-                st.session_state.customer_info["it_director"] = row["name"]
-                st.session_state.customer_info["it_email"] = row["email"]
-                st.session_state.customer_info["it_phone"] = row.get("phone", "")
-            elif role == "Facilities" and not st.session_state.customer_info["facilities_engineer"]:
-                st.session_state.customer_info["facilities_engineer"] = row["name"]
-                st.session_state.customer_info["facilities_email"] = row["email"]
-                st.session_state.customer_info["facilities_phone"] = row.get("phone", "")
-            elif role == "RTCC" and not st.session_state.customer_info["rtcc_name"]:
-                st.session_state.customer_info["rtcc_name"] = row["name"]
-                st.session_state.customer_info["rtcc_email"] = row["email"]
-                st.session_state.customer_info["rtcc_phone"] = row.get("phone", "")
-            elif role == "Radio Shop" and not st.session_state.customer_info["radio_shop_name"]:
-                st.session_state.customer_info["radio_shop_name"] = row["name"]
-                st.session_state.customer_info["radio_shop_email"] = row["email"]
-                st.session_state.customer_info["radio_shop_phone"] = row.get("phone", "")
-
-        st.session_state.customer_info["contacts"] = [
-            {
-                "role": row.get("role", ""),
-                "name": row.get("name", ""),
-                "title": row.get("title", ""),
-                "email": row.get("email", ""),
-                "phone": row.get("phone", ""),
-            }
-            for row in st.session_state.poc_rows
-            if row.get("role") or row.get("name") or row.get("title") or row.get("email") or row.get("phone")
-        ]
+        st.session_state.poc_rows = sync_customer_info_from_poc_rows(
+            st.session_state.customer_info,
+            st.session_state.poc_rows,
+            widget_state=st.session_state,
+        )
 
         # --- Deployment Specifications ---
         st.markdown("**Deployment Specifications**")
@@ -2368,6 +2497,10 @@ with tab1:
                 key="use_new_report",
             )
             if st.button("📄 Build Survey Document", width="stretch"):
+                _set_sidebar_activity(
+                    "Building survey document",
+                    "Preparing report inputs and saving session metadata.",
+                )
                 with st.status("Building report...", expanded=True) as report_status:
                     try:
                         survey_date = _derive_survey_date_from_sites(st.session_state.processed_sites)
@@ -2380,6 +2513,10 @@ with tab1:
 
                         # Update metadata save
                         report_status.write("💾 Saving session metadata...")
+                        _set_sidebar_activity(
+                            "Building survey document",
+                            "Saving session metadata before document generation.",
+                        )
                         _save_session_metadata(st.session_state.processed_sites)
 
                         # Create subfolder with PD name and creation date
@@ -2394,6 +2531,7 @@ with tab1:
                         report_status.update(label="Generating report document...")
                         def _report_progress(step):
                             report_status.write(f"📝 {step}")
+                            _set_sidebar_activity("Building survey document", step)
 
                         report_sites = st.session_state.candidate_sites if use_new_report and st.session_state.candidate_sites else st.session_state.processed_sites
                         if use_new_report and st.session_state.candidate_sites:
@@ -2421,8 +2559,14 @@ with tab1:
                         )
 
                         report_status.update(label="Report generated successfully!", state="complete", expanded=False)
+                        _set_sidebar_activity(
+                            "Survey document ready",
+                            os.path.basename(report_path),
+                            state="complete",
+                        )
                     except Exception as e:
                         report_status.update(label="Report generation failed", state="error")
+                        _set_sidebar_activity("Survey document failed", str(e), state="error")
                         st.error(f"Report generation error: {e}")
 
                 if st.session_state.get("generated_report"):
@@ -2430,6 +2574,10 @@ with tab1:
 
             if st.session_state.get("generated_report") and st.session_state.candidate_sites:
                 if st.button("☁️ Upload Generated Report to Drive", width="stretch"):
+                    _set_sidebar_activity(
+                        "Uploading report to Google Drive",
+                        "Preparing Drive upload workflow.",
+                    )
                     with st.status("Uploading report to Google Drive...", expanded=True) as upload_status:
                         try:
                             report_path = st.session_state.generated_report
@@ -2443,6 +2591,10 @@ with tab1:
 
                             if uploaded_files and not st.session_state.get("client_folder_id"):
                                 upload_status.update(label="Preparing Drive folder structure...")
+                                _set_sidebar_activity(
+                                    "Uploading report to Google Drive",
+                                    "Preparing Drive folder structure.",
+                                )
                                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                                 agency = st.session_state.customer_info.get("agency_name", client_name)
                                 client_folder_name = f"{agency.replace(' ', '_')}_{timestamp}"
@@ -2467,6 +2619,10 @@ with tab1:
                                 upload_line = st.empty()
                                 for idx, uploaded_file in enumerate(uploaded_files):
                                     upload_line.write(f"☁️ Uploading image {idx+1}/{total_upload}: {uploaded_file.name}")
+                                    _set_sidebar_activity(
+                                        "Uploading report to Google Drive",
+                                        f"Uploading image {idx+1}/{total_upload}: {uploaded_file.name}",
+                                    )
                                     temp_path = os.path.join(tempfile.gettempdir(), uploaded_file.name)
                                     with open(temp_path, "wb") as f:
                                         f.write(uploaded_file.getbuffer())
@@ -2483,6 +2639,10 @@ with tab1:
                                 upload_status.write(f"✅ Uploaded {total_upload} images to Drive")
 
                             upload_status.write("📤 Uploading report and exports to Drive...")
+                            _set_sidebar_activity(
+                                "Uploading report to Google Drive",
+                                "Uploading generated report and export files.",
+                            )
                             report_drive.upload_file(
                                 report_path,
                                 st.session_state.get("reports_folder_id") or st.session_state.get("client_folder_id"),
@@ -2517,8 +2677,14 @@ with tab1:
                                 st.session_state.drive_folder_url = f"https://drive.google.com/drive/folders/{st.session_state.client_folder_id}"
 
                             upload_status.update(label="Report uploaded successfully!", state="complete", expanded=False)
+                            _set_sidebar_activity(
+                                "Drive upload complete",
+                                os.path.basename(report_path),
+                                state="complete",
+                            )
                         except Exception as e:
                             upload_status.update(label="Upload failed", state="error")
+                            _set_sidebar_activity("Drive upload failed", str(e), state="error")
                             st.error(f"Drive upload error: {e}")
 
             # Persistent export buttons — survive reruns
@@ -2589,6 +2755,10 @@ with tab3:
                 st.warning("Enter an Agency Name on the Survey Pipeline tab first.")
             else:
                 from gmail_lookup import search_hubspot_for_records
+                _set_sidebar_activity(
+                    "Searching HubSpot",
+                    f"Looking up CRM records for {agency}.",
+                )
                 with st.spinner("Searching HubSpot..."):
                     hs_results = search_hubspot_for_records(
                         agency,
@@ -2601,12 +2771,28 @@ with tab3:
                     _append_integration_log(
                         f"[HubSpot API] Found {co_count} companies, {deal_count} deals for {agency}"
                     )
+                    _set_sidebar_activity(
+                        "HubSpot search complete",
+                        f"Found {co_count} companies and {deal_count} deals for {agency}.",
+                        state="complete",
+                    )
                     st.success(f"Found {co_count} companies and {deal_count} deals.")
                 elif hs_results["status"] == "no_credentials":
+                    _set_sidebar_activity(
+                        "HubSpot search blocked",
+                        "No HubSpot token is configured.",
+                        state="error",
+                    )
                     st.warning("HubSpot access token not configured. Add it in Settings > API Configurations.")
                 elif hs_results["status"] == "error":
+                    _set_sidebar_activity("HubSpot search failed", hs_results["error"], state="error")
                     st.error(f"HubSpot error: {hs_results['error']}")
                 else:
+                    _set_sidebar_activity(
+                        "HubSpot search complete",
+                        f"No HubSpot records were found for {agency}.",
+                        state="complete",
+                    )
                     st.info("No HubSpot records found for this agency.")
             
         if st.button("📅 Schedule Kickoff Meeting (Google Calendar)", key="cal_sync_tab2", width="stretch"):
@@ -2628,6 +2814,10 @@ with tab3:
                 st.warning("Enter an Agency Name on the Survey Pipeline tab first.")
             else:
                 from gmail_lookup import search_jira_for_tickets
+                _set_sidebar_activity(
+                    "Searching Jira",
+                    f"Looking up Jira tickets for {agency}.",
+                )
                 with st.spinner("Searching Jira..."):
                     jira_results = search_jira_for_tickets(
                         agency,
@@ -2641,12 +2831,28 @@ with tab3:
                     _append_integration_log(
                         f"[Jira API] Found {count} tickets for {agency}"
                     )
+                    _set_sidebar_activity(
+                        "Jira search complete",
+                        f"Found {count} Jira tickets for {agency}.",
+                        state="complete",
+                    )
                     st.success(f"Found {count} Jira tickets.")
                 elif jira_results["status"] == "no_credentials":
+                    _set_sidebar_activity(
+                        "Jira search blocked",
+                        "Jira credentials are not configured.",
+                        state="error",
+                    )
                     st.warning("Jira credentials not configured. Add email + API token in Settings > API Configurations.")
                 elif jira_results["status"] == "error":
+                    _set_sidebar_activity("Jira search failed", jira_results["error"], state="error")
                     st.error(f"Jira error: {jira_results['error']}")
                 else:
+                    _set_sidebar_activity(
+                        "Jira search complete",
+                        f"No Jira tickets were found for {agency}.",
+                        state="complete",
+                    )
                     st.info("No Jira tickets found for this agency.")
             
         if st.button("💬 Send Project Status to Slack", key="slack_sync_tab2", width="stretch"):
