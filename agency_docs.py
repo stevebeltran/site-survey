@@ -5,13 +5,26 @@ ThreadPoolExecutor with atomic result storage and error handling.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from gmail_lookup import extract_department_contacts, search_department_calendar_events
 from google_drive import GoogleDriveManager
 from matcher import assign_contact_to_role
 import google_oauth
 
 
-def fetch_agency_docs_parallel(dept_name: str, dept_domain: str, session_state: dict) -> dict:
+def extract_department_contacts(domain: str):
+    """Lazy wrapper to avoid import-time coupling with gmail_lookup."""
+    from gmail_lookup import extract_department_contacts as _extract_department_contacts
+
+    return _extract_department_contacts(domain)
+
+
+def search_department_calendar_events(dept_name: str, dept_domain: str):
+    """Lazy wrapper to avoid import-time coupling with gmail_lookup."""
+    from gmail_lookup import search_department_calendar_events as _search_department_calendar_events
+
+    return _search_department_calendar_events(dept_name, dept_domain)
+
+
+def fetch_agency_docs_parallel(dept_name: str, dept_domain: str, session_state: dict, city_hint: str | None = None) -> dict:
     """Fetch agency documents, contacts, and events in parallel.
 
     Runs three independent lookups concurrently:
@@ -25,6 +38,7 @@ def fetch_agency_docs_parallel(dept_name: str, dept_domain: str, session_state: 
     Args:
         dept_name: Department name (e.g., "West Memphis Police")
         dept_domain: Department domain (e.g., "memphispd.gov")
+        city_hint: Optional city name to broaden Gmail search when no domain is known.
         session_state: Streamlit session_state dict for auth credentials
 
     Returns:
@@ -52,6 +66,11 @@ def fetch_agency_docs_parallel(dept_name: str, dept_domain: str, session_state: 
         """Extract contacts from Gmail and assign POC roles."""
         try:
             contacts = extract_department_contacts(dept_domain)
+            if not contacts and not dept_domain:
+                from gmail_lookup import search_gmail_for_contacts as _search_gmail_for_contacts
+
+                contacts_result = _search_gmail_for_contacts(dept_name, city=city_hint)
+                contacts = contacts_result.get("all_contacts", [])
             # Assign poc_role to each contact using the matcher
             for contact in contacts:
                 contact["poc_role"] = assign_contact_to_role(contact)

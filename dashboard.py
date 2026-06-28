@@ -1128,10 +1128,16 @@ def _render_survey_upload_block(current_proximity_radius: int, compact: bool = F
                 try:
                     # Extract domain from agency address or leave empty
                     agency_address = st.session_state.customer_info.get("agency_address", "")
-                    dept_domain = ""  # Can be extracted from address in future iterations
+                    city_hint = processor.extract_city_from_address(agency_address) if agency_address else ""
+                    dept_domain = ""  # Domain is not reliably derivable from the address alone
 
                     # Call parallel fetch in blocking context (will complete before rerun)
-                    result = fetch_agency_docs_parallel(agency_name, dept_domain, st.session_state)
+                    result = fetch_agency_docs_parallel(
+                        agency_name,
+                        dept_domain,
+                        st.session_state,
+                        city_hint=city_hint,
+                    )
 
                     # Store results atomically
                     st.session_state.agency_contacts = result.get("contacts", [])
