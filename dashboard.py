@@ -1131,6 +1131,18 @@ def _render_survey_upload_block(current_proximity_radius: int, compact: bool = F
                     city_hint = processor.extract_city_from_address(agency_address) if agency_address else ""
                     dept_domain = ""  # Domain is not reliably derivable from the address alone
 
+                    # Run Gmail lookup first so contacts are available even if the
+                    # slower multi-source harvest times out later.
+                    gmail_result = _lookup_contacts_from_gmail(agency_name, city_hint or None)
+                    if gmail_result and gmail_result.get("status") == "connected":
+                        found_contacts = gmail_result.get("all_contacts", [])
+                        if found_contacts:
+                            st.session_state["gmail_found_contacts"] = found_contacts
+                            st.session_state.agency_contacts = found_contacts
+                        for key in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email"):
+                            if gmail_result.get(key):
+                                st.session_state.customer_info[key] = gmail_result[key]
+
                     # Call parallel fetch in blocking context (will complete before rerun)
                     result = fetch_agency_docs_parallel(
                         agency_name,
@@ -1140,7 +1152,9 @@ def _render_survey_upload_block(current_proximity_radius: int, compact: bool = F
                     )
 
                     # Store results atomically
-                    st.session_state.agency_contacts = result.get("contacts", [])
+                    parallel_contacts = result.get("contacts", [])
+                    if parallel_contacts:
+                        st.session_state.agency_contacts = parallel_contacts
                     st.session_state.agency_docs = result.get("docs", [])
                     st.session_state.agency_calendar = result.get("events", [])
                     st.session_state.agency_docs_errors = result.get("errors", {})
