@@ -1,8 +1,10 @@
 import os
+import io
 import json
 import re
 import datetime
 import logging
+import math
 import tempfile
 import zipfile
 from xml.sax.saxutils import escape as xml_escape
@@ -117,15 +119,20 @@ def _survey_site_records(site_data_list=None, candidate_sites=None):
                 "longitude": site.identity.site_longitude,
                 "address": site.identity.site_address or site.identity.site_name or f"Site {idx}",
                 "site_name": site.identity.site_name or f"Site {idx}",
+                "city": site.identity.jurisdiction,
+                "state": site.identity.state,
             })
         return records
 
     for idx, site in enumerate(site_data_list or [], start=1):
+        address = site.get("address") or f"Site {idx}"
         records.append({
             "latitude": site.get("latitude"),
             "longitude": site.get("longitude"),
-            "address": site.get("address") or f"Site {idx}",
-            "site_name": site.get("site_name") or site.get("address") or f"Site {idx}",
+            "address": address,
+            "site_name": site.get("site_name") or address or f"Site {idx}",
+            "city": site.get("city") or getattr(address, "city", None),
+            "state": site.get("state") or getattr(address, "state", None),
         })
     return records
 
@@ -608,55 +615,382 @@ def _coords_close(a, b, tol=1e-6):
     return abs(a[0] - b[0]) < tol and abs(a[1] - b[1]) < tol
 
 
+def _infer_city_state(site_data_list):
+    """Infer a shared city/state label for the exported map from site records."""
+    if not site_data_list:
+        return None, None
+
+    for site in site_data_list:
+        city = (site.get("city") or "").strip()
+        state = (site.get("state") or "").strip()
+        if city:
+            return city, state or None
+
+    for site in site_data_list:
+        address = str(site.get("address") or "")
+        parts = [part.strip() for part in address.split(",") if part.strip()]
+        if len(parts) >= 5:
+            state = parts[-3]
+            city_idx = -5 if "county" in parts[-4].lower() else -4
+            city = parts[city_idx]
+            if city and state and state.lower() not in {"united states", "usa"}:
+                return city, state
+        if len(parts) >= 3:
+            city = parts[1] if len(parts) > 3 else parts[0]
+            state = parts[-2].split()[0]
+            if city and state and state.lower() not in {"united states", "usa", "county"}:
+                return city, state
+
+    return None, None
+
+
+def _geojson_outer_rings(geometry):
+    """Return outer rings from a GeoJSON polygon or multipolygon."""
+    if not geometry:
+        return []
+    if geometry.get("type") == "Polygon":
+        coords = geometry.get("coordinates") or []
+        return [coords[0]] if coords else []
+    if geometry.get("type") == "MultiPolygon":
+        rings = []
+        for polygon in geometry.get("coordinates") or []:
+            if polygon:
+                rings.append(polygon[0])
+        return rings
+    return []
+
+
+def _project_lon_lat(lon, lat, origin_lon, origin_lat):
+    """Project lon/lat to local meters using an equirectangular approximation."""
+    meters_per_deg_lat = 111320.0
+    meters_per_deg_lon = meters_per_deg_lat * math.cos(math.radians(origin_lat))
+    x = (lon - origin_lon) * meters_per_deg_lon
+    y = (lat - origin_lat) * meters_per_deg_lat
+    return x, y
+
+
+def _map_site_labels(site_data_list):
+    """Build distinct, readable labels for all site markers."""
+    names = [(site.get("site_name") or "").strip() for site in site_data_list]
+    counts = {}
+    for name in names:
+        if name:
+            key = name.lower()
+            counts[key] = counts.get(key, 0) + 1
+
+    labels = []
+    for idx, site in enumerate(site_data_list, start=1):
+        name = (site.get("site_name") or "").strip()
+        city = (site.get("city") or "").strip().lower()
+        address = str(site.get("address") or "").strip()
+        address_label = address.split(",")[0].strip() if address else ""
+        use_address = (
+            not name
+            or counts.get(name.lower(), 0) > 1
+            or (city and name.lower() == city)
+        )
+        label = address_label if use_address and address_label else name or address_label or f"Site {idx}"
+        labels.append(label)
+    return labels
+
+
+def _latlon_to_world_pixels(lat, lon, zoom):
+    """Convert WGS84 coordinates to Web Mercator world pixels for a zoom level."""
+    lat = max(min(lat, 85.05112878), -85.05112878)
+    scale = 256 * (2 ** zoom)
+    x = (lon + 180.0) / 360.0 * scale
+    sin_lat = math.sin(math.radians(lat))
+    y = (
+        0.5
+        - math.log((1 + sin_lat) / (1 - sin_lat)) / (4 * math.pi)
+    ) * scale
+    return x, y
+
+
+def _choose_basemap_zoom(min_lat, max_lat, min_lon, max_lon, width_px, height_px, max_zoom=16):
+    """Select the most detailed zoom that keeps tile fetch counts reasonable."""
+    if width_px <= 0 or height_px <= 0:
+        return 12
+
+    for zoom in range(max_zoom, 0, -1):
+        left_x, bottom_y = _latlon_to_world_pixels(min_lat, min_lon, zoom)
+        right_x, top_y = _latlon_to_world_pixels(max_lat, max_lon, zoom)
+        left = min(left_x, right_x)
+        right = max(left_x, right_x)
+        top = min(top_y, bottom_y)
+        bottom = max(top_y, bottom_y)
+
+        tile_x0 = int(math.floor(left / 256))
+        tile_x1 = int(math.floor((right - 1) / 256))
+        tile_y0 = int(math.floor(top / 256))
+        tile_y1 = int(math.floor((bottom - 1) / 256))
+        tile_count = (tile_x1 - tile_x0 + 1) * (tile_y1 - tile_y0 + 1)
+
+        if tile_count <= 36:
+            return zoom
+
+    return 1
+
+
+def _fetch_map_tile(x, y, zoom):
+    """Fetch a light street-map tile and return it as an RGBA PIL image."""
+    max_tile = 2 ** zoom
+    if y < 0 or y >= max_tile:
+        return None
+
+    wrapped_x = x % max_tile
+    tile_url = f"https://a.basemaps.cartocdn.com/light_all/{zoom}/{wrapped_x}/{y}.png"
+    response = requests.get(
+        tile_url,
+        timeout=8,
+        headers={"User-Agent": "DFR-SiteSurvey/1.0"},
+    )
+    response.raise_for_status()
+    return Image.open(io.BytesIO(response.content)).convert("RGBA")
+
+
+def _build_tile_basemap(min_lat, max_lat, min_lon, max_lon, width_px, height_px):
+    """Render a muted street basemap for the requested geographic extent."""
+    zoom = _choose_basemap_zoom(min_lat, max_lat, min_lon, max_lon, width_px, height_px)
+    min_world_x, max_world_y = _latlon_to_world_pixels(min_lat, min_lon, zoom)
+    max_world_x, min_world_y = _latlon_to_world_pixels(max_lat, max_lon, zoom)
+
+    left = min(min_world_x, max_world_x)
+    right = max(min_world_x, max_world_x)
+    top = min(min_world_y, max_world_y)
+    bottom = max(min_world_y, max_world_y)
+
+    tile_size = 256
+    tile_x0 = int(math.floor(left / tile_size))
+    tile_x1 = int(math.floor((right - 1) / tile_size))
+    tile_y0 = int(math.floor(top / tile_size))
+    tile_y1 = int(math.floor((bottom - 1) / tile_size))
+
+    stitched = Image.new(
+        "RGBA",
+        ((tile_x1 - tile_x0 + 1) * tile_size, (tile_y1 - tile_y0 + 1) * tile_size),
+        (244, 247, 251, 255),
+    )
+
+    for tile_x in range(tile_x0, tile_x1 + 1):
+        for tile_y in range(tile_y0, tile_y1 + 1):
+            try:
+                tile = _fetch_map_tile(tile_x, tile_y, zoom)
+            except Exception:
+                tile = None
+            if tile is not None:
+                stitched.paste(tile, ((tile_x - tile_x0) * tile_size, (tile_y - tile_y0) * tile_size))
+
+    crop_left = int(round(left - (tile_x0 * tile_size)))
+    crop_top = int(round(top - (tile_y0 * tile_size)))
+    crop_right = int(round(right - (tile_x0 * tile_size)))
+    crop_bottom = int(round(bottom - (tile_y0 * tile_size)))
+    cropped = stitched.crop((crop_left, crop_top, crop_right, crop_bottom))
+    return cropped.resize((width_px, height_px), Image.Resampling.LANCZOS), zoom
+
+
+def _map_extent_with_rings(valid_sites, boundary_rings, ring_radius_m):
+    """Compute a padded lat/lon extent that includes site rings and any boundary geometry."""
+    lats = []
+    lons = []
+
+    for site in valid_sites:
+        lat = site["latitude"]
+        lon = site["longitude"]
+        lats.append(lat)
+        lons.append(lon)
+        for bearing in (0, 90, 180, 270):
+            edge = geodesic(meters=ring_radius_m).destination((lat, lon), bearing)
+            lats.append(edge.latitude)
+            lons.append(edge.longitude)
+
+    min_lat = min(lats)
+    max_lat = max(lats)
+    min_lon = min(lons)
+    max_lon = max(lons)
+
+    lat_pad = max((max_lat - min_lat) * 0.12, 0.0045)
+    lon_pad = max((max_lon - min_lon) * 0.12, 0.0045)
+    return (
+        max(-85.05112878, min_lat - lat_pad),
+        min(85.05112878, max_lat + lat_pad),
+        max(-180.0, min_lon - lon_pad),
+        min(180.0, max_lon + lon_pad),
+    )
+
+
 def draw_styled_map(site_data_list, output_map_path):
     """
-    Create a beautiful stylized site coordinates map visualization using PIL.
+    Create a geographic static map with site markers, 2-mile rings, and city boundary.
     """
-    width, height = 800, 450
-    img = Image.new('RGB', (width, height), color='#0F172A')
+    width, height = 1400, 900
+    img = Image.new("RGBA", (width, height), color="#eef4fb")
     draw = ImageDraw.Draw(img)
-    
-    # Draw dark grid lines
-    grid_spacing = 50
-    for x in range(0, width, grid_spacing):
-        draw.line([(x, 0), (x, height)], fill='#1E293B', width=1)
-    for y in range(0, height, grid_spacing):
-        draw.line([(0, y), (width, y)], fill='#1E293B', width=1)
-        
+
+    header_h = 118
+    footer_h = 68
+    panel_margin = 34
+    map_left = panel_margin
+    map_top = header_h
+    map_right = width - panel_margin
+    map_bottom = height - footer_h
+    draw.rectangle([0, 0, width, header_h], fill="#0f2743")
+    draw.rectangle([0, header_h, width, height], fill="#eef4fb")
+    draw.rounded_rectangle(
+        [map_left, map_top, map_right, map_bottom],
+        radius=18,
+        fill="#f8fbff",
+        outline="#c7d7ea",
+        width=2,
+    )
+
+    title_font = _load_font(bold=True, size=34)
+    subtitle_font = _load_font(size=19)
+    label_font = _load_font(bold=True, size=20)
+    small_font = _load_font(size=16)
+    marker_font = _load_font(bold=True, size=14)
+
     if not site_data_list:
+        draw.text((40, 34), "DFR SITE MAP", fill="#ffffff", font=title_font)
+        draw.text((40, 76), "No survey sites available for rendering.", fill="#d8e4f2", font=subtitle_font)
         img.save(output_map_path)
         return output_map_path
-        
-    lats = [s['latitude'] for s in site_data_list]
-    lons = [s['longitude'] for s in site_data_list]
-    
-    min_lat, max_lat = min(lats), max(lats)
-    min_lon, max_lon = min(lons), max(lons)
-    
-    lat_range = max(max_lat - min_lat, 0.01)
-    lon_range = max(max_lon - min_lon, 0.01)
-    
-    def to_pixel(lat, lon):
-        x = 100 + ((lon - min_lon) / lon_range) * 600
-        y = 350 - ((lat - min_lat) / lat_range) * 250
-        return int(x), int(y)
-        
-    coords = [to_pixel(s['latitude'], s['longitude']) for s in site_data_list]
-    if len(coords) > 1:
-        draw.line(coords + [coords[0]], fill='#3B82F6', width=2)
-        
-    for idx, site in enumerate(site_data_list):
-        px, py = to_pixel(site['latitude'], site['longitude'])
-        draw.ellipse([px-12, py-12, px+12, py+12], outline='#3B82F6', width=2)
-        draw.ellipse([px-6, py-6, px+6, py+6], fill='#EF4444')
-        label = f"Location #{idx+1} - {site['address'].split(',')[0]}"
-        draw.text((px+16, py-8), label, fill='#F8FAFC')
-        
-    draw.rectangle([10, 10, 320, 70], fill='#1E293B', outline='#3B82F6')
-    draw.text((20, 20), "DFR DEPLOYMENT NETWORK MAP", fill='#3B82F6')
-    draw.text((20, 40), f"Active Locations: {len(site_data_list)} Nodes", fill='#94A3B8')
-    
-    img.save(output_map_path)
+
+    valid_sites = [
+        site for site in site_data_list
+        if site.get("latitude") is not None and site.get("longitude") is not None
+    ]
+    if not valid_sites:
+        draw.text((40, 34), "DFR SITE MAP", fill="#ffffff", font=title_font)
+        draw.text((40, 76), "Survey sites are missing coordinates.", fill="#d8e4f2", font=subtitle_font)
+        img.save(output_map_path)
+        return output_map_path
+
+    city, state = _infer_city_state(valid_sites)
+    site_labels = _map_site_labels(valid_sites)
+    boundary = query_city_boundary(city, state) if city else None
+
+    ring_radius_m = 3218.69
+    boundary_rings = _geojson_outer_rings(boundary)
+    map_w = map_right - map_left
+    map_h = map_bottom - map_top
+    min_lat, max_lat, min_lon, max_lon = _map_extent_with_rings(valid_sites, boundary_rings, ring_radius_m)
+    basemap, zoom = _build_tile_basemap(min_lat, max_lat, min_lon, max_lon, map_w, map_h)
+    img.alpha_composite(basemap, (map_left, map_top))
+
+    bbox_left_world, bbox_bottom_world = _latlon_to_world_pixels(min_lat, min_lon, zoom)
+    bbox_right_world, bbox_top_world = _latlon_to_world_pixels(max_lat, max_lon, zoom)
+    bbox_left = min(bbox_left_world, bbox_right_world)
+    bbox_right = max(bbox_left_world, bbox_right_world)
+    bbox_top = min(bbox_top_world, bbox_bottom_world)
+    bbox_bottom = max(bbox_top_world, bbox_bottom_world)
+
+    def to_panel_px(lat, lon):
+        world_x, world_y = _latlon_to_world_pixels(lat, lon, zoom)
+        px = ((world_x - bbox_left) / max(bbox_right - bbox_left, 1.0)) * map_w
+        py = ((world_y - bbox_top) / max(bbox_bottom - bbox_top, 1.0)) * map_h
+        return px, py
+
+    def to_px(lat, lon):
+        panel_x, panel_y = to_panel_px(lat, lon)
+        return map_left + panel_x, map_top + panel_y
+
+    overlay = Image.new("RGBA", (map_w, map_h), (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+
+    for ring in boundary_rings:
+        if len(ring) < 3:
+            continue
+        points = [to_panel_px(lat, lon) for lon, lat in ring]
+        overlay_draw.polygon(points, fill=(75, 123, 178, 50), outline=(39, 86, 132, 180))
+        overlay_draw.line(points + [points[0]], fill=(39, 86, 132, 190), width=3)
+
+    # Rings are rendered on a separate alpha layer so road labels remain visible beneath them.
+    label_offsets = [(22, -44), (22, 18), (-270, -44), (-270, 18)]
+    for idx, site in enumerate(valid_sites, start=1):
+        px, py = to_panel_px(site["latitude"], site["longitude"])
+        east_edge = geodesic(meters=ring_radius_m).destination((site["latitude"], site["longitude"]), 90)
+        ring_px, _ = to_panel_px(east_edge.latitude, east_edge.longitude)
+        radius_px = abs(ring_px - px)
+        overlay_draw.ellipse(
+            [px - radius_px, py - radius_px, px + radius_px, py + radius_px],
+            outline=(184, 55, 49, 210),
+            width=5,
+            fill=(217, 79, 67, 52),
+        )
+
+    img.alpha_composite(overlay, (map_left, map_top))
+
+    for idx, site in enumerate(valid_sites, start=1):
+        px, py = to_px(site["latitude"], site["longitude"])
+        draw.ellipse([px - 12, py - 12, px + 12, py + 12], fill="#d92d20", outline="#ffffff", width=3)
+        marker_text = str(idx)
+        marker_box = draw.textbbox((0, 0), marker_text, font=marker_font)
+        marker_w = marker_box[2] - marker_box[0]
+        marker_h = marker_box[3] - marker_box[1]
+        draw.text((px - marker_w / 2, py - marker_h / 2 - 1), marker_text, fill="#ffffff", font=marker_font)
+
+        label = f"Site {idx}: {site_labels[idx - 1]}"
+        label_w = draw.textbbox((0, 0), label, font=label_font)[2]
+        offset_x, offset_y = label_offsets[(idx - 1) % len(label_offsets)]
+        label_x = min(max(map_left + 12, px + offset_x), map_right - label_w - 18)
+        label_y = min(max(map_top + 12, py + offset_y), map_bottom - 36)
+        draw.line([(px, py), (label_x - 8 if label_x > px else label_x + label_w + 8, label_y + 14)], fill="#8da8c7", width=2)
+        draw.rounded_rectangle(
+            [label_x - 10, label_y - 8, label_x + label_w + 12, label_y + 30],
+            radius=10,
+            fill="#ffffff",
+            outline="#b9cce0",
+            width=2,
+        )
+        draw.text((label_x, label_y), label, fill="#16324f", font=label_font)
+
+    location_text = f"{city}, {state}" if city and state else city or "Survey Area"
+    draw.text((40, 30), "DFR SITE MAP", fill="#ffffff", font=title_font)
+    draw.text(
+        (40, 76),
+        f"{location_text}   |   {len(valid_sites)} site(s)   |   2-mile operational rings",
+        fill="#d8e4f2",
+        font=subtitle_font,
+    )
+
+    legend_box = [width - 360, 24, width - 36, 96]
+    draw.rounded_rectangle(legend_box, radius=14, fill="#173456", outline="#4c7096", width=2)
+    draw.ellipse([legend_box[0] + 18, legend_box[1] + 16, legend_box[0] + 42, legend_box[1] + 40], fill="#d92d20", outline="#ffffff", width=2)
+    draw.text((legend_box[0] + 52, legend_box[1] + 14), "Site marker", fill="#ffffff", font=small_font)
+    draw.ellipse(
+        [legend_box[0] + 18, legend_box[1] + 42, legend_box[0] + 42, legend_box[1] + 66],
+        outline="#d94b45",
+        width=3,
+        fill="#f2bfba",
+    )
+    draw.text((legend_box[0] + 52, legend_box[1] + 40), "2-mile ring", fill="#ffffff", font=small_font)
+    draw.rectangle([legend_box[0] + 170, legend_box[1] + 44, legend_box[0] + 194, legend_box[1] + 64], fill="#dcecff", outline="#2f6ea8", width=2)
+    draw.text((legend_box[0] + 204, legend_box[1] + 40), "City boundary", fill="#ffffff", font=small_font)
+
+    north_x = map_right - 42
+    north_y = map_bottom - 42
+    draw.polygon([(north_x, north_y - 30), (north_x - 12, north_y + 8), (north_x + 12, north_y + 8)], fill="#16324f")
+    draw.text((north_x - 8, north_y + 12), "N", fill="#16324f", font=small_font)
+
+    roster_width = 300
+    roster_height = max(90, 42 + (len(valid_sites) * 24))
+    roster_box = [map_right - roster_width - 28, map_top + 28, map_right - 28, map_top + 28 + roster_height]
+    draw.rounded_rectangle(roster_box, radius=14, fill="#ffffff", outline="#b9cce0", width=2)
+    draw.text((roster_box[0] + 18, roster_box[1] + 12), "Sites", fill="#16324f", font=label_font)
+    for idx, site in enumerate(valid_sites, start=1):
+        roster_y = roster_box[1] + 44 + ((idx - 1) * 24)
+        roster_name = site_labels[idx - 1]
+        draw.text((roster_box[0] + 18, roster_y), f"{idx}. {roster_name}", fill="#35516d", font=small_font)
+
+    draw.text(
+        (40, height - 48),
+        "Street basemap: CARTO / OpenStreetMap. Rings are translucent for label readability. Boundary shown where available.",
+        fill="#4c627a",
+        font=small_font,
+    )
+
+    img.convert("RGB").save(output_map_path)
     return output_map_path
 
 def create_engineering_drawing(bg_path, output_path, markers, engineer_note, address=None, overlay_image_path=None, image_placements=None, images_dir=None):

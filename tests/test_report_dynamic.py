@@ -3,6 +3,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 import tempfile
+from unittest.mock import patch
+from PIL import Image
 from site_model import (
     CandidateSite, SiteIdentity, SurveyPhoto, ElectricalInfo,
     NetworkInfo, RFInfo, FlightOps, StructuralInfo, AccessInfo,
@@ -40,7 +42,10 @@ class TestDynamicReport:
         with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as f:
             output_path = f.name
         try:
-            result = generate_candidate_site_report(sites, output_path)
+            basemap = Image.new("RGBA", (1332, 714), color=(240, 244, 248, 255))
+            with patch("reporter.query_city_boundary", return_value=None), \
+                 patch("reporter._build_tile_basemap", return_value=(basemap, 13)):
+                result = generate_candidate_site_report(sites, output_path)
             assert os.path.exists(result)
             assert os.path.getsize(result) > 0
         finally:
@@ -55,7 +60,10 @@ class TestDynamicReport:
         with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as f:
             output_path = f.name
         try:
-            result = generate_candidate_site_report(sites, output_path)
+            basemap = Image.new("RGBA", (1332, 714), color=(240, 244, 248, 255))
+            with patch("reporter.query_city_boundary", return_value=None), \
+                 patch("reporter._build_tile_basemap", return_value=(basemap, 13)):
+                result = generate_candidate_site_report(sites, output_path)
             assert os.path.exists(result)
             from docx import Document
             doc = Document(result)
@@ -71,7 +79,10 @@ class TestDynamicReport:
         with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as f:
             output_path = f.name
         try:
-            result = generate_candidate_site_report([], output_path)
+            basemap = Image.new("RGBA", (1332, 714), color=(240, 244, 248, 255))
+            with patch("reporter.query_city_boundary", return_value=None), \
+                 patch("reporter._build_tile_basemap", return_value=(basemap, 13)):
+                result = generate_candidate_site_report([], output_path)
             assert os.path.exists(result)
         finally:
             os.unlink(output_path)
@@ -106,7 +117,10 @@ class TestDynamicReport:
         with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as f:
             output_path = f.name
         try:
-            result = generate_candidate_site_report(sites, output_path, customer_info=customer_info)
+            basemap = Image.new("RGBA", (1332, 714), color=(240, 244, 248, 255))
+            with patch("reporter.query_city_boundary", return_value=None), \
+                 patch("reporter._build_tile_basemap", return_value=(basemap, 13)):
+                result = generate_candidate_site_report(sites, output_path, customer_info=customer_info)
             from docx import Document
 
             doc = Document(result)

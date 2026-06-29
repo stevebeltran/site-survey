@@ -5,6 +5,7 @@ import unittest
 import datetime
 from types import SimpleNamespace
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 from docx import Document
@@ -67,7 +68,10 @@ class PipelineTests(unittest.TestCase):
                 }
             ]
 
-            reporter.generate_word_report(site_data, str(report_path))
+            basemap = Image.new("RGBA", (1332, 714), color=(240, 244, 248, 255))
+            with patch.object(reporter, "query_city_boundary", return_value=None), \
+                 patch.object(reporter, "_build_tile_basemap", return_value=(basemap, 13)):
+                reporter.generate_word_report(site_data, str(report_path))
 
             self.assertTrue(report_path.exists())
             doc = Document(str(report_path))
@@ -76,6 +80,76 @@ class PipelineTests(unittest.TestCase):
             combined = f"{text}\n{cell_text}"
 
             self.assertNotIn("Lansing Police Department", combined)
+
+    def test_draw_styled_map_renders_boundary_and_rings(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            map_path = tmp_path / "dfr_site_map.png"
+            site_data = [
+                {
+                    "address": "Zionsville Police Department, 1075, Parkway Drive, Zionsville, Boone County, Indiana, 46077, United States",
+                    "latitude": 39.94709384920635,
+                    "longitude": -86.27429027777778,
+                    "city": "Zionsville",
+                    "state": "Indiana",
+                },
+                {
+                    "address": "Zionsville Town Hall, 1100, West Oak Street, Zionsville, Boone County, Indiana, 46077, United States",
+                    "latitude": 39.952111590038314,
+                    "longitude": -86.27500775862069,
+                    "city": "Zionsville",
+                    "state": "Indiana",
+                },
+            ]
+            boundary = {
+                "type": "Polygon",
+                "coordinates": [[
+                    [-86.2825, 39.9440],
+                    [-86.2670, 39.9440],
+                    [-86.2670, 39.9568],
+                    [-86.2825, 39.9568],
+                    [-86.2825, 39.9440],
+                ]],
+            }
+
+            basemap = Image.new("RGBA", (1332, 714), color=(233, 238, 245, 255))
+            with patch.object(reporter, "query_city_boundary", return_value=boundary), \
+                 patch.object(reporter, "_build_tile_basemap", return_value=(basemap, 13)):
+                reporter.draw_styled_map(site_data, str(map_path))
+
+            self.assertTrue(map_path.exists())
+            with Image.open(map_path) as img:
+                self.assertEqual(img.size, (1400, 900))
+                colors = img.convert("RGB").getcolors(maxcolors=200000)
+                self.assertIsNotNone(colors)
+                self.assertGreater(len(colors), 10)
+
+    def test_draw_styled_map_uses_translucent_ring_fill(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            map_path = tmp_path / "dfr_site_map.png"
+            site_data = [
+                {
+                    "address": "123 Main St, Chicago, IL",
+                    "site_name": "Main St",
+                    "latitude": 41.862644,
+                    "longitude": -87.661244,
+                    "city": "Chicago",
+                    "state": "IL",
+                }
+            ]
+
+            basemap = Image.new("RGBA", (1332, 714), color=(100, 150, 200, 255))
+            with patch.object(reporter, "query_city_boundary", return_value=None), \
+                 patch.object(reporter, "_build_tile_basemap", return_value=(basemap, 13)):
+                reporter.draw_styled_map(site_data, str(map_path))
+
+            with Image.open(map_path) as img:
+                blended_pixel = img.convert("RGB").getpixel((800, 475))
+                self.assertNotEqual(blended_pixel, (100, 150, 200))
+                self.assertNotEqual(blended_pixel, (217, 79, 67))
+                self.assertGreater(blended_pixel[0], 100)
+                self.assertGreater(blended_pixel[2], 100)
 
     def test_extract_exif_gps_uses_exifread_for_heic_metadata(self):
         class DummyRatio:
