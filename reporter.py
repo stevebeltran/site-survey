@@ -1658,11 +1658,7 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
         doc.add_picture(map_image_path, width=Inches(6.0))
         doc.add_paragraph()
         
-    # 2. Points of Contact Table
-    doc.add_page_break()
-    _add_poc_table(doc, customer_info)
-
-    # 3. Installation Timeframe
+    # 2. Installation Timeframe
     delivery_target = customer_info.get("survey_delivery_target", "TBD")
     follow_up = customer_info.get("follow_up_requirements", "") or "Infrastructure checklist completion prior to hardware delivery"
     action_items = customer_info.get("action_items", "") or "Confirm ethernet and dedicated power connectivity is established 30 days before installation."
@@ -1855,7 +1851,6 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
     doc.add_paragraph(f"Surveyor: {surveyor}")
     doc.add_paragraph(f"Candidate Sites Found: {len(candidate_sites)}")
 
-    _add_poc_table(doc, customer_info)
     doc.add_page_break()
 
     # ── 2. Candidate Site Sections ──
