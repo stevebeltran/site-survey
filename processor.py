@@ -303,8 +303,8 @@ def cluster_to_candidate_sites(clusters, agency_name="", survey_date=None):
             result = reverse_geocode(center_lat, center_lon)
             if result:
                 addr = result
-                # Prefer structured city data from Nominatim (already prioritizes city > town > village > hamlet > municipality)
-                city = getattr(result, 'city', None) or extract_city_from_address(result)
+                # Use extract_city_from_address to validate Nominatim city against amenity/street keywords
+                city = extract_city_from_address(result)
         except Exception as e:
             logger.warning("Reverse geocode failed for cluster %d at (%s, %s): %s", idx, center_lat, center_lon, e)
 
@@ -686,9 +686,21 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
     clusters = [c for c in clusters if len(c) >= MIN_SITE_PHOTOS]
 
     site_data = []
+    # Extract and validate city from first cluster's location to ensure folder name is clean
+    first_location_address = reverse_geocode(clusters[0][0]["lat"], clusters[0][0]["lon"]) if clusters else None
+    validated_city = extract_city_from_address(first_location_address) if first_location_address else None
+    # Use validated city for folder name if agency_name is unvalidated (from detector)
+    folder_agency_name = agency_name
+    if not agency_name and validated_city:
+        folder_agency_name = f"{validated_city} Police Department"
+    elif agency_name and validated_city:
+        # If agency_name contains amenity keywords, prefer validated city
+        if any(word in agency_name.lower().split() for word in ['police', 'fire', 'way', 'drive', 'street']):
+            folder_agency_name = f"{validated_city} Police Department"
+
     batch_folder_name = _derive_department_folder_name(
-        full_address=reverse_geocode(clusters[0][0]["lat"], clusters[0][0]["lon"]) if clusters else None,
-        agency_name=agency_name,
+        full_address=first_location_address,
+        agency_name=folder_agency_name,
     )
     batch_folder = os.path.join(output_dir, batch_folder_name)
     if not os.path.exists(batch_folder):
@@ -732,8 +744,8 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
             copied_images.append(img_copy)
 
         # Extract city from full address; use caller-provided agency name if available
-        # Prefer structured city data from Nominatim (already prioritizes city > town > village > hamlet > municipality)
-        city = getattr(full_address, 'city', None) or extract_city_from_address(full_address)
+        # Use extract_city_from_address to validate Nominatim city against amenity/street keywords
+        city = extract_city_from_address(full_address)
         site_agency = agency_name or (f"{city} Police Department" if city else None)
 
         site_data.append({

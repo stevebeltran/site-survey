@@ -50,7 +50,7 @@ except ImportError:
 # Page config
 st.set_page_config(
     page_title="DFR Site Survey & Deployment Suite",
-    page_icon="🚁",
+    page_icon="D",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -615,6 +615,7 @@ def _detect_agency_from_gps(first_file_bytes, first_file_name):
         if lat is None or lon is None:
             return None
         full_address = processor.reverse_geocode(lat, lon)
+        # Use extract_city_from_address to validate Nominatim city against amenity/street keywords
         city = processor.extract_city_from_address(full_address)
         state = getattr(full_address, 'state', None)
         agency_name = f"{city} Police Department" if city else None
@@ -1062,18 +1063,28 @@ def _render_primary_map_section():
                 ).add_to(m)
 
             TWO_MILES_M = 3218.69
+
+            def _make_circle_polygon(center_lat, center_lon, radius_m, num_points=36):
+                """Create geographic circle using geodesic calculations."""
+                from geopy.distance import geodesic
+                points = []
+                for bearing in range(0, 360, 360 // num_points):
+                    edge = geodesic(meters=radius_m).destination((center_lat, center_lon), bearing)
+                    points.append([edge.latitude, edge.longitude])
+                points.append(points[0])
+                return points
+
             for site in sites:
                 lat, lon = site['latitude'], site['longitude']
                 _parts = [p.strip() for p in site['address'].split(',')]
                 label = ', '.join(_parts[:2]) if len(_parts) >= 2 else site['address']
-                folium.Circle(
-                    location=[lat, lon],
-                    radius=TWO_MILES_M,
+
+                circle_coords = _make_circle_polygon(lat, lon, TWO_MILES_M)
+                folium.PolyLine(
+                    locations=circle_coords,
                     color="#ef4444",
                     weight=1.5,
-                    fill=True,
-                    fill_color="#ef4444",
-                    fill_opacity=0.06,
+                    opacity=0.8,
                     tooltip=f"2-mile radius — {label}",
                 ).add_to(m)
                 folium.Marker(
@@ -2414,7 +2425,7 @@ def _render_annotator_workspace(selected_site):
 
 
 # Layout Columns
-tab1, tab2, tab3, tab4 = st.tabs(["📋 Survey Pipeline", "🛠️ Annotate", "🔗 Workflow Sync", "📈 Analytics & Logs"])
+tab1, tab2, tab3, tab4 = st.tabs(["Survey Pipeline", "Annotate", "Workflow Sync", "Analytics & Logs"])
 
 with tab1:
     if st.session_state.processed_sites:
@@ -2907,7 +2918,7 @@ with tab3:
     
     with col_x:
         st.markdown("#### CRM & Kickoff Scheduler")
-        if st.button("🔍 Fetch Customer Purchase Info (HubSpot)", key="hs_sync_tab2", width="stretch"):
+        if st.button("Fetch Customer Purchase Info (HubSpot)", key="hs_sync_tab2", width="stretch"):
             agency = st.session_state.customer_info.get("agency_name", "")
             if not agency:
                 st.warning("Enter an Agency Name on the Survey Pipeline tab first.")
@@ -2953,11 +2964,11 @@ with tab3:
                     )
                     st.info("No HubSpot records found for this agency.")
             
-        if st.button("📅 Schedule Kickoff Meeting (Google Calendar)", key="cal_sync_tab2", width="stretch"):
+        if st.button("Schedule Kickoff Meeting (Google Calendar)", key="cal_sync_tab2", width="stretch"):
             _append_integration_log("[Google Calendar API] POST /events - Scheduled Kickoff for Lansing PD")
             st.success("Meeting Scheduled & Invites sent to stakeholders.")
 
-        if st.button("☁️ Sync Report to Google Drive", key="drive_sync_tab2", width="stretch"):
+        if st.button("Sync Report to Google Drive", key="drive_sync_tab2", width="stretch"):
             if hasattr(st.session_state, 'generated_report'):
                 _append_integration_log(f"[Google Drive API] POST /files - Uploaded '{os.path.basename(st.session_state.generated_report)}'")
                 st.success("Report synchronized to cloud storage.")
@@ -2966,7 +2977,7 @@ with tab3:
 
     with col_y:
         st.markdown("#### Operations & Communication")
-        if st.button("🎫 Search Jira Tickets", key="jira_sync_tab2", width="stretch"):
+        if st.button("Search Jira Tickets", key="jira_sync_tab2", width="stretch"):
             agency = st.session_state.customer_info.get("agency_name", "")
             if not agency:
                 st.warning("Enter an Agency Name on the Survey Pipeline tab first.")
@@ -3015,7 +3026,7 @@ with tab3:
                     )
                     st.info("No Jira tickets found for this agency.")
             
-        if st.button("💬 Send Project Status to Slack", key="slack_sync_tab2", width="stretch"):
+        if st.button("Send Project Status to Slack", key="slack_sync_tab2", width="stretch"):
             _append_integration_log("[Slack Webhook] POST /hooks - Posted Lansing PD survey status")
             st.success("Notification broadcasted to Slack channels.")
 

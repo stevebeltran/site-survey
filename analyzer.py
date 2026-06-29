@@ -265,22 +265,25 @@ def enrich_gis(site, skip_nominatim=False, progress_callback=None):
             site.checklist_provenance["ZIP_CODE"] = "failed"
             site.checklist_provenance["JURISDICTION"] = "failed"
 
-    # ── Open-Elevation API ──
+    # ── Open-Elevation API (fallback if EXIF elevation not available) ──
     _progress("Looking up elevation...")
-    try:
-        resp = requests.get(
-            "https://api.open-elevation.com/api/v1/lookup",
-            params={"locations": f"{lat},{lon}"},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            results = resp.json().get("results", [])
-            if results:
-                site.identity.site_elevation = results[0].get("elevation")
-                site.checklist_provenance["SITE_ELEVATION"] = "auto"
-    except Exception as e:
-        logger.warning("Open-Elevation lookup failed for (%s, %s): %s", lat, lon, e)
-        site.checklist_provenance["SITE_ELEVATION"] = "failed"
+    if site.identity.site_elevation is None:
+        try:
+            resp = requests.get(
+                "https://api.open-elevation.com/api/v1/lookup",
+                params={"locations": f"{lat},{lon}"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                results = resp.json().get("results", [])
+                if results:
+                    site.identity.site_elevation = results[0].get("elevation")
+                    site.checklist_provenance["SITE_ELEVATION"] = "auto"
+        except Exception as e:
+            logger.warning("Open-Elevation lookup failed for (%s, %s): %s", lat, lon, e)
+            site.checklist_provenance["SITE_ELEVATION"] = "failed"
+    else:
+        site.checklist_provenance["SITE_ELEVATION"] = "auto"
 
     # ── Gemini Flash: building height from photo ──
     _progress("Estimating building height...")

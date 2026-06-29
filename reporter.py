@@ -479,13 +479,38 @@ def query_city_boundary(city_name, state_name=None):
         return None
 
     # Try Overpass with multiple admin levels
+    # Prefer admin_level 8 (town/city), then 7 (city), then 6 (county/municipality)
     for admin_level in ("8", "7", "6"):
         result = _query_overpass_boundary(city_name, state_name, admin_level)
-        if result:
+        if result and _is_reasonable_city_boundary(result):
             return result
 
     # Fallback: Nominatim search for boundary polygon
     return _query_nominatim_boundary(city_name, state_name)
+
+
+def _is_reasonable_city_boundary(boundary_geom):
+    """Validate that a boundary represents a city, not a larger region.
+
+    Checks that the boundary fits within reasonable dimensions for a small-to-medium city.
+    Small towns: 1-5km. Medium cities: 5-20km. Rejects anything larger.
+    """
+    try:
+        from shapely.geometry import shape
+        geom = shape(boundary_geom)
+        bounds = geom.bounds  # (minlon, minlat, maxlon, maxlat)
+
+        # Calculate extent in km (rough conversion: 1° ≈ 111km)
+        lat_span_km = (bounds[3] - bounds[1]) * 111
+        lon_span_km = (bounds[2] - bounds[0]) * 111 * 0.7  # Adjust for latitude
+
+        # Strict: for US small towns/cities, max extent should be 15km max
+        # (Zionsville is ~2km across, Indianapolis is ~30km)
+        max_extent = max(lat_span_km, lon_span_km)
+
+        return max_extent < 15
+    except Exception:
+        return True  # If validation fails, accept the boundary
 
 
 def _query_overpass_boundary(city_name, state_name, admin_level):
@@ -1680,13 +1705,26 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
             height_str = f"{building_height:.0f} ft" if isinstance(building_height, (int, float)) else str(building_height)
         else:
             height_str = "Assessment required"
+
+        elevation = site.get('elevation')
+        elevation_str = ""
+        if elevation:
+            if isinstance(elevation, (int, float)):
+                elevation_str = f"{elevation:.0f} ft"
+            else:
+                elevation_str = str(elevation)
+
         details_data = [
             ("Site Name", site_name),
             ("Site Address", _format_short_address(site['address'])),
             ("Height of building", height_str),
+        ]
+        if elevation_str:
+            details_data.append(("Ground Elevation", elevation_str))
+        details_data.extend([
             ("Access to roof", analysis.get('roof_access', 'Unknown')),
             ("Roof type", analysis.get('roof_type', 'Unknown'))
-        ]
+        ])
         add_styled_table(doc, details_data, ["SITE DETAILS", "NOTES / VALUE"])
         
         # Considerations & Airspace

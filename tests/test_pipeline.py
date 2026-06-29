@@ -183,11 +183,12 @@ class PipelineTests(unittest.TestCase):
                 process_file=lambda fh, details=False: fake_tags
             )
 
-            lat, lon, captured = processor._extract_gps_with_exifread(tmp_path)
+            lat, lon, captured, altitude = processor._extract_gps_with_exifread(tmp_path)
 
             self.assertAlmostEqual(lat, 38.70733888888889)
             self.assertAlmostEqual(lon, -90.41387222222222)
             self.assertEqual(captured, datetime.datetime(2026, 5, 6, 8, 3, 22))
+            self.assertIsNone(altitude)
         finally:
             processor.exifread = original_exifread
             os.unlink(tmp_path)
@@ -214,6 +215,7 @@ class PipelineTests(unittest.TestCase):
                     41.0,
                     -87.0,
                     datetime.datetime(2026, 6, 15, 12, 0, 0),
+                    600.0,
                 )
                 processor.reverse_geocode = lambda lat, lon: "100 Test St, Test City, TS"
 
