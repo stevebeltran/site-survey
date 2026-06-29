@@ -52,7 +52,7 @@ def _parse_exifread_dms(dms, ref):
 def _extract_gps_with_exifread(image_path):
     """Extract GPS metadata using ExifRead without decoding the image."""
     if exifread is None:
-        return None, None, None
+        return None, None, None, None
 
     try:
         with open(image_path, 'rb') as fh:
@@ -64,12 +64,17 @@ def _extract_gps_with_exifread(image_path):
         lon_ref = tags.get('GPS GPSLongitudeRef')
 
         if not (lat_tag and lat_ref and lon_tag and lon_ref):
-            return None, None, None
+            return None, None, None, None
 
         lat_values = getattr(lat_tag, 'values', lat_tag)
         lon_values = getattr(lon_tag, 'values', lon_tag)
         lat = _parse_exifread_dms(lat_values, lat_ref)
         lon = _parse_exifread_dms(lon_values, lon_ref)
+
+        altitude = None
+        alt_tag = tags.get('GPS GPSAltitude')
+        if alt_tag:
+            altitude = _exifread_ratio_to_float(alt_tag)
 
         capture_time = None
         for time_key in ('EXIF DateTimeOriginal', 'Image DateTime', 'EXIF DateTimeDigitized'):
@@ -86,10 +91,10 @@ def _extract_gps_with_exifread(image_path):
         else:
             dt = datetime.datetime.fromtimestamp(os.path.getctime(image_path))
 
-        return lat, lon, dt
+        return lat, lon, dt, altitude
     except Exception as e:
         print(f"ExifRead GPS extraction failed for {image_path}: {e}")
-        return None, None, None
+        return None, None, None, None
 
 def get_decimal_from_dms(dms, ref):
     """Convert degrees, minutes, seconds to decimal degrees."""
@@ -104,22 +109,22 @@ def get_decimal_from_dms(dms, ref):
 
 def extract_exif_gps(image_path):
     """
-    Extract GPS coordinates and capture time from image metadata.
-    Returns (lat, lon, capture_time) or (None, None, None).
+    Extract GPS coordinates, capture time, and altitude from image metadata.
+    Returns (lat, lon, capture_time, altitude) or (None, None, None, None).
     """
-    lat_lon_time = _extract_gps_with_exifread(image_path)
-    if lat_lon_time != (None, None, None):
-        return lat_lon_time
+    exif_result = _extract_gps_with_exifread(image_path)
+    if exif_result != (None, None, None, None):
+        return exif_result
 
     try:
         with Image.open(image_path) as img:
             exif_data = img._getexif()
             if not exif_data:
-                return None, None, None
-            
+                return None, None, None, None
+
             gps_info = {}
             capture_time = None
-            
+
             for tag_id, value in exif_data.items():
                 tag_name = TAGS.get(tag_id, tag_id)
                 if tag_name == 'GPSInfo':
@@ -133,7 +138,18 @@ def extract_exif_gps(image_path):
                'GPSLongitude' in gps_info and 'GPSLongitudeRef' in gps_info:
                 lat = get_decimal_from_dms(gps_info['GPSLatitude'], gps_info['GPSLatitudeRef'])
                 lon = get_decimal_from_dms(gps_info['GPSLongitude'], gps_info['GPSLongitudeRef'])
-                
+
+                altitude = None
+                if 'GPSAltitude' in gps_info:
+                    try:
+                        alt_value = gps_info['GPSAltitude']
+                        if isinstance(alt_value, (tuple, list)) and len(alt_value) == 2:
+                            altitude = float(alt_value[0]) / float(alt_value[1])
+                        else:
+                            altitude = float(alt_value)
+                    except (ValueError, ZeroDivisionError):
+                        pass
+
                 # Format capture time as datetime object or string
                 if capture_time:
                     try:
@@ -143,11 +159,11 @@ def extract_exif_gps(image_path):
                 else:
                     # Fallback to file system creation time
                     dt = datetime.datetime.fromtimestamp(os.path.getctime(image_path))
-                
-                return lat, lon, dt
+
+                return lat, lon, dt, altitude
     except Exception as e:
         print(f"Error reading EXIF from {image_path}: {e}")
-    return None, None, None
+    return None, None, None, None
 
 def cluster_images(images_meta, radius_meters=90.0):
     """
@@ -270,13 +286,25 @@ def cluster_to_candidate_sites(clusters, agency_name="", survey_date=None):
         center_lat = sum(lats) / len(lats) if lats else 0.0
         center_lon = sum(lons) / len(lons) if lons else 0.0
 
+        # Calculate most-common elevation from cluster
+        elevations = [m.get("altitude") for m in cluster if m.get("altitude") is not None]
+        site_elevation = None
+        if elevations:
+            # Count occurrences and find most common
+            from collections import Counter
+            counter = Counter([round(e) for e in elevations])
+            if counter:
+                most_common_rounded = counter.most_common(1)[0][0]
+                site_elevation = float(most_common_rounded)
+
         addr = ""
         city = ""
         try:
             result = reverse_geocode(center_lat, center_lon)
             if result:
                 addr = result
-                city = extract_city_from_address(result)
+                # Prefer structured city data from Nominatim (already prioritizes city > town > village > hamlet > municipality)
+                city = getattr(result, 'city', None) or extract_city_from_address(result)
         except Exception as e:
             logger.warning("Reverse geocode failed for cluster %d at (%s, %s): %s", idx, center_lat, center_lon, e)
 
@@ -291,6 +319,7 @@ def cluster_to_candidate_sites(clusters, agency_name="", survey_date=None):
             site_address=addr,
             site_latitude=center_lat,
             site_longitude=center_lon,
+            site_elevation=site_elevation,
             survey_date=survey_date,
         )
 
@@ -305,6 +334,7 @@ def cluster_to_candidate_sites(clusters, agency_name="", survey_date=None):
                 category=categorize_photo_by_filename(filename),
                 gps_latitude=img.get("lat"),
                 gps_longitude=img.get("lon"),
+                photo_altitude=img.get("altitude"),
                 photo_date=time_str.split(" ")[0] if time_str else None,
                 photo_time=time_str.split(" ")[1] if " " in time_str else None,
             )
@@ -335,8 +365,26 @@ def extract_city_from_address(full_address):
         return None
 
     # Use structured city data from Nominatim when available (GeoResult)
+    # BUT: Validate that it's actually a city, not an amenity/building name
+    # (Nominatim returns building names when GPS points to specific structures)
     if hasattr(full_address, 'city') and full_address.city:
-        return full_address.city
+        city_candidate = str(full_address.city).strip()
+        amenity_keywords = {
+            'police', 'fire', 'station', 'department', 'building', 'house',
+            'school', 'church', 'hospital', 'clinic', 'office', 'center',
+            'tower', 'facility', 'complex', 'court', 'jail', 'prison',
+            'library', 'museum', 'park', 'bridge', 'mall', 'market',
+        }
+        street_indicators = {
+            'street', 'st', 'road', 'rd', 'avenue', 'ave', 'blvd', 'boulevard',
+            'lane', 'ln', 'drive', 'dr', 'way', 'circle', 'cir', 'court', 'ct',
+            'place', 'pl', 'terrace', 'parkway', 'path', 'trails',
+        }
+        city_words = set(city_candidate.lower().split())
+        # Reject if it contains amenity/building keywords OR street type words
+        if not ((city_words & amenity_keywords) or (city_words & street_indicators)):
+            return city_candidate
+        # If rejected, fall through to string parsing below
 
     full_address = str(full_address).strip()
 
@@ -613,13 +661,14 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
     images_meta = []
     no_gps_images = []
     for idx, path in enumerate(image_paths, start=1):
-        lat, lon, time_captured = extract_exif_gps(path)
+        lat, lon, time_captured, altitude = extract_exif_gps(path)
         meta = {
             'path': path,
             'filename': os.path.basename(path),
             'lat': lat,
             'lon': lon,
-            'time': time_captured
+            'time': time_captured,
+            'altitude': altitude
         }
         if lat is not None and lon is not None:
             images_meta.append(meta)
@@ -653,16 +702,26 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
         lons = [c['lon'] for c in cluster]
         center_lat = sum(lats) / len(lats)
         center_lon = sum(lons) / len(lons)
-        
+
+        # Calculate most-common elevation from cluster
+        elevations = [c.get('altitude') for c in cluster if c.get('altitude') is not None]
+        elevation = None
+        if elevations:
+            from collections import Counter
+            counter = Counter([round(e) for e in elevations])
+            if counter:
+                most_common_rounded = counter.most_common(1)[0][0]
+                elevation = float(most_common_rounded)
+
         # Name the cluster based on geocoding
         full_address = reverse_geocode(center_lat, center_lon)
         # Create a shorter, filesystem-friendly folder name from the short address
         short_name = _drive_site_folder_name(full_address, f"SITE_{idx+1:03d}")
-        
+
         site_folder = os.path.join(batch_folder, short_name)
         if not os.path.exists(site_folder):
             os.makedirs(site_folder)
-            
+
         copied_images = []
         for img in cluster:
             dest_path = os.path.join(site_folder, img['filename'])
@@ -671,9 +730,10 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
             img_copy = img.copy()
             img_copy['dest_path'] = dest_path
             copied_images.append(img_copy)
-            
+
         # Extract city from full address; use caller-provided agency name if available
-        city = extract_city_from_address(full_address)
+        # Prefer structured city data from Nominatim (already prioritizes city > town > village > hamlet > municipality)
+        city = getattr(full_address, 'city', None) or extract_city_from_address(full_address)
         site_agency = agency_name or (f"{city} Police Department" if city else None)
 
         site_data.append({
@@ -686,6 +746,7 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
             'agency_name': site_agency,
             'latitude': center_lat,
             'longitude': center_lon,
+            'elevation': elevation,
             'images': copied_images
         })
 
