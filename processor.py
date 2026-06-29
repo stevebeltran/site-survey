@@ -74,7 +74,8 @@ def _extract_gps_with_exifread(image_path):
         altitude = None
         alt_tag = tags.get('GPS GPSAltitude')
         if alt_tag:
-            altitude = _exifread_ratio_to_float(alt_tag)
+            alt_value = getattr(alt_tag, 'values', alt_tag)
+            altitude = _exifread_ratio_to_float(alt_value)
 
         capture_time = None
         for time_key in ('EXIF DateTimeOriginal', 'Image DateTime', 'EXIF DateTimeDigitized'):
@@ -759,6 +760,8 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
             'latitude': center_lat,
             'longitude': center_lon,
             'elevation': elevation,
+            'roof_elevation': elevation,
+            'building_height_source': None,
             'images': copied_images
         })
 

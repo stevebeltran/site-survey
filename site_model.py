@@ -203,6 +203,8 @@ class StructuralInfo:
     """Roof and building structural details."""
 
     building_height: Optional[float] = None
+    building_height_source: Optional[str] = None
+    roof_elevation: Optional[float] = None
     roof_type: Optional[str] = None
     parapet_height: Optional[float] = None
     roof_condition: Optional[str] = None
@@ -211,6 +213,8 @@ class StructuralInfo:
     def to_json(self) -> dict:
         return {
             "BUILDING_HEIGHT": self.building_height,
+            "BUILDING_HEIGHT_SOURCE": self.building_height_source,
+            "ROOF_ELEVATION": self.roof_elevation,
             "ROOF_TYPE": self.roof_type,
             "PARAPET_HEIGHT": self.parapet_height,
             "ROOF_CONDITION": self.roof_condition,
@@ -221,6 +225,8 @@ class StructuralInfo:
     def from_json(cls, data: dict) -> StructuralInfo:
         return cls(
             building_height=data.get("BUILDING_HEIGHT"),
+            building_height_source=data.get("BUILDING_HEIGHT_SOURCE"),
+            roof_elevation=data.get("ROOF_ELEVATION"),
             roof_type=data.get("ROOF_TYPE"),
             parapet_height=data.get("PARAPET_HEIGHT"),
             roof_condition=data.get("ROOF_CONDITION"),
