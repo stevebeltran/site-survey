@@ -17,6 +17,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from geopy.distance import geodesic
 from PIL import Image, ImageDraw, ImageFont
+from contact_model import extract_contact_for_report_role
 
 logger = logging.getLogger(__name__)
 
@@ -1462,14 +1463,24 @@ def _find_contact_row(customer_info, role_name):
 
 
 def _format_role_contact(customer_info, role_name, name_key, email_key, phone_key=None, default="DNA"):
-    """Prefer structured contact rows, then flat legacy keys, then DNA."""
+    """Prefer structured contact rows, then flat legacy keys, then DNA.
+
+    Uses extract_contact_for_report_role from contact_model for unified format support.
+    Falls back to legacy flat fields for backward compatibility.
+    """
     customer_info = customer_info or {}
-    contact = _find_contact_row(customer_info, role_name)
-    name = (contact.get("name") or customer_info.get(name_key) or "").strip()
-    email = (contact.get("email") or customer_info.get(email_key) or "").strip()
-    phone = ""
-    if phone_key:
-        phone = (contact.get("phone") or customer_info.get(phone_key) or "").strip()
+
+    # Try to extract from unified contacts array using contact_model
+    contacts = customer_info.get("contacts", [])
+    name, email, phone = extract_contact_for_report_role(contacts, role_name)
+
+    # Fallback to legacy flat fields if not found in unified array
+    if not name:
+        name = (customer_info.get(name_key) or "").strip()
+    if not email:
+        email = (customer_info.get(email_key) or "").strip()
+    if not phone and phone_key:
+        phone = (customer_info.get(phone_key) or "").strip()
 
     lines = [value for value in (name, email, phone) if value]
     return "\n".join(lines) if lines else default
@@ -1545,9 +1556,7 @@ def _add_poc_table(doc, customer_info):
 
     rows = [
         ("Point of Contact\n(Name, E-Mail, Phone #)", _format_contact_block(
-            _get_contact_value(customer_info, "poc_name", ""),
-            _get_contact_value(customer_info, "poc_email", ""),
-            _get_contact_value(customer_info, "poc_phone", ""),
+            *_format_role_contact(customer_info, "POC", "poc_name", "poc_email", "poc_phone").split("\n")
         )),
         ("RTCC/RTIC\n(Name, E-Mail, Phone #)", _format_contact_block(
             *_format_role_contact(customer_info, "RTCC", "rtcc_name", "rtcc_email", "rtcc_phone").split("\n")
