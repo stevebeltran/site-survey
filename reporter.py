@@ -906,7 +906,49 @@ def draw_styled_map(site_data_list, output_map_path):
         overlay_draw.line(points + [points[0]], fill=(39, 86, 132, 190), width=3)
 
     # Rings are rendered on a separate alpha layer so road labels remain visible beneath them.
-    label_offsets = [(22, -44), (22, 18), (-270, -44), (-270, 18)]
+    placed_label_boxes = []
+
+    def _rects_overlap(a, b, padding=0):
+        return not (
+            (a[2] + padding) <= b[0]
+            or (b[2] + padding) <= a[0]
+            or (a[3] + padding) <= b[1]
+            or (b[3] + padding) <= a[1]
+        )
+
+    def _candidate_label_boxes(px, py, card_w, card_h):
+        offsets = []
+        for distance in (26, 52, 84):
+            offsets.extend([
+                (distance, -card_h - 14),
+                (distance, 16),
+                (-card_w - distance, -card_h - 14),
+                (-card_w - distance, 16),
+                (distance, -card_h - 52),
+                (-card_w - distance, -card_h - 52),
+            ])
+
+        candidates = []
+        for offset_x, offset_y in offsets:
+            left = min(max(map_left + 12, px + offset_x), map_right - card_w - 12)
+            top = min(max(map_top + 12, py + offset_y), map_bottom - card_h - 12)
+            candidates.append((left, top, left + card_w, top + card_h))
+        return candidates
+
+    def _pick_label_box(px, py, card_w, card_h):
+        candidates = _candidate_label_boxes(px, py, card_w, card_h)
+        for rect in candidates:
+            if all(not _rects_overlap(rect, other, padding=10) for other in placed_label_boxes):
+                return rect
+        return min(
+            candidates,
+            key=lambda rect: sum(
+                max(0, min(rect[2], other[2]) - max(rect[0], other[0]))
+                * max(0, min(rect[3], other[3]) - max(rect[1], other[1]))
+                for other in placed_label_boxes
+            ) if placed_label_boxes else 0,
+        )
+
     for idx, site in enumerate(valid_sites, start=1):
         px, py = to_panel_px(site["latitude"], site["longitude"])
         east_edge = geodesic(meters=ring_radius_m).destination((site["latitude"], site["longitude"]), 90)
@@ -921,6 +963,15 @@ def draw_styled_map(site_data_list, output_map_path):
 
     img.alpha_composite(overlay, (map_left, map_top))
 
+    if boundary_rings:
+        boundary_draw = ImageDraw.Draw(img, "RGBA")
+        for ring in boundary_rings:
+            if len(ring) < 3:
+                continue
+            points = [to_panel_px(lat, lon) for lon, lat in ring]
+            boundary_draw.line(points + [points[0]], fill=(255, 255, 255, 235), width=8)
+            boundary_draw.line(points + [points[0]], fill=(30, 64, 175, 245), width=4)
+
     for idx, site in enumerate(valid_sites, start=1):
         px, py = to_px(site["latitude"], site["longitude"])
         draw.ellipse([px - 12, py - 12, px + 12, py + 12], fill="#d92d20", outline="#ffffff", width=3)
@@ -931,19 +982,23 @@ def draw_styled_map(site_data_list, output_map_path):
         draw.text((px - marker_w / 2, py - marker_h / 2 - 1), marker_text, fill="#ffffff", font=marker_font)
 
         label = f"Site {idx}: {site_labels[idx - 1]}"
-        label_w = draw.textbbox((0, 0), label, font=label_font)[2]
-        offset_x, offset_y = label_offsets[(idx - 1) % len(label_offsets)]
-        label_x = min(max(map_left + 12, px + offset_x), map_right - label_w - 18)
-        label_y = min(max(map_top + 12, py + offset_y), map_bottom - 36)
-        draw.line([(px, py), (label_x - 8 if label_x > px else label_x + label_w + 8, label_y + 14)], fill="#8da8c7", width=2)
+        text_bbox = draw.textbbox((0, 0), label, font=label_font)
+        label_w = (text_bbox[2] - text_bbox[0]) + 24
+        label_h = (text_bbox[3] - text_bbox[1]) + 18
+        label_box = _pick_label_box(px, py, label_w, label_h)
+        placed_label_boxes.append(label_box)
+        label_x, label_y = label_box[0], label_box[1]
+        anchor_x = max(label_x, min(px, label_x + label_w))
+        anchor_y = max(label_y, min(py, label_y + label_h))
+        draw.line([(px, py), (anchor_x, anchor_y)], fill="#7d9bb9", width=2)
         draw.rounded_rectangle(
-            [label_x - 10, label_y - 8, label_x + label_w + 12, label_y + 30],
+            [label_x, label_y, label_x + label_w, label_y + label_h],
             radius=10,
             fill="#ffffff",
             outline="#b9cce0",
             width=2,
         )
-        draw.text((label_x, label_y), label, fill="#16324f", font=label_font)
+        draw.text((label_x + 12, label_y + 9), label, fill="#16324f", font=label_font)
 
     location_text = f"{city}, {state}" if city and state else city or "Survey Area"
     draw.text((40, 30), "DFR SITE MAP", fill="#ffffff", font=title_font)
