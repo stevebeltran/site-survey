@@ -1209,6 +1209,14 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
+# Phase indicator
+col_logo, col_phase = st.columns([1, 3])
+with col_logo:
+    pass  # Logo already renders above
+with col_phase:
+    st.markdown("---")
+    _render_phase_indicator()
+
 _overview = _mission_overview()
 st.markdown(
     f"""
