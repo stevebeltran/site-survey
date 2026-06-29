@@ -1504,6 +1504,7 @@ uploaded_files, client_name, proximity_radius = _render_survey_upload_block(
 if uploaded_files and not st.session_state.get("_auto_processed"):
     st.session_state._auto_processed = True
     _set_upload_processing_state("processing", file_count=len(uploaded_files))
+    _set_phase("Processing photos", status="active")
     _set_sidebar_activity(
         "Processing survey photos",
         f"Preparing {len(uploaded_files)} uploaded file(s).",
