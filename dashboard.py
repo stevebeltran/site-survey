@@ -38,6 +38,7 @@ import processor
 import analyzer
 import reporter
 from contact_rows import build_initial_poc_rows, sync_customer_info_from_poc_rows
+from contact_model import migrate_flat_to_array
 from site_model import CandidateSite, export_sites_json, export_sites_csv
 from processor import cluster_images, split_clusters_by_time_gap, cluster_to_candidate_sites, MIN_SITE_PHOTOS
 from analyzer import enrich_gis
@@ -335,6 +336,10 @@ if "customer_info" not in st.session_state:
         "survey_date": "",
         "report_date": "",
     }
+else:
+    # On reload/startup, migrate any old flat contact fields to unified array
+    st.session_state.customer_info = migrate_flat_to_array(st.session_state.customer_info)
+
 if "active_bg_image" not in st.session_state:
     st.session_state.active_bg_image = None
 if "client_folder_id" not in st.session_state:
