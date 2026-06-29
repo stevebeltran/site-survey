@@ -107,7 +107,7 @@ def fetch_agency_docs_parallel(dept_name: str, dept_domain: str, session_state: 
                 from gmail_lookup import search_gmail_for_contacts as _search_gmail_for_contacts
 
                 contacts_result = _search_gmail_for_contacts(dept_name, city=city_hint)
-                contacts = contacts_result.get("all_contacts", [])
+                contacts = contacts_result.get("contacts", [])
             return _merge_contacts(contacts)
         except Exception as e:
             result["errors"]["gmail"] = str(e)

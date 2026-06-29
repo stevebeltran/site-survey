@@ -38,6 +38,7 @@ import processor
 import analyzer
 import reporter
 from contact_rows import build_initial_poc_rows, sync_customer_info_from_poc_rows
+from contact_model import migrate_flat_to_array
 from site_model import CandidateSite, export_sites_json, export_sites_csv
 from processor import cluster_images, split_clusters_by_time_gap, cluster_to_candidate_sites, MIN_SITE_PHOTOS
 from analyzer import enrich_gis
@@ -335,6 +336,10 @@ if "customer_info" not in st.session_state:
         "survey_date": "",
         "report_date": "",
     }
+else:
+    # On reload/startup, migrate any old flat contact fields to unified array
+    st.session_state.customer_info = migrate_flat_to_array(st.session_state.customer_info)
+
 if "active_bg_image" not in st.session_state:
     st.session_state.active_bg_image = None
 if "client_folder_id" not in st.session_state:
@@ -721,14 +726,21 @@ def _run_connected_docs_search(agency, city=""):
     contacts = _lookup_contacts_from_gmail(agency, city)
     contact_status = contacts.get("status", "no_results") if contacts else "no_results"
     if contact_status == "connected":
-        found = contacts.get("all_contacts", [])
-        if found:
-            st.session_state["gmail_found_contacts"] = found
-            st.session_state["agency_contacts"] = found
-        for key in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email"):
-            if contacts.get(key):
-                st.session_state.customer_info[key] = contacts[key]
-        _append_integration_log(f"[Gmail API] Found {len(found)} contacts for {agency}")
+        discovered_contacts = contacts.get("contacts", [])
+        if discovered_contacts:
+            # Merge discovered contacts into unified array, avoiding duplicates by email
+            existing = st.session_state.customer_info.get("contacts", [])
+            existing_emails = {c.get("email", "").lower() for c in existing if c.get("email")}
+            for contact in discovered_contacts:
+                email = contact.get("email", "").lower()
+                if email and email in existing_emails:
+                    continue  # Skip duplicate email
+                existing.append(contact)
+            st.session_state.customer_info["contacts"] = existing
+            st.session_state["gmail_found_contacts"] = discovered_contacts
+            _append_integration_log(f"[Gmail API] Found {len(discovered_contacts)} contacts for {agency}")
+        else:
+            _append_integration_log(f"[Gmail API] No contacts found for {agency}")
         found_any = True
     elif contact_status == "auth_error":
         _append_integration_log(f"[Gmail API] Auth error: {contacts.get('error', '')}")

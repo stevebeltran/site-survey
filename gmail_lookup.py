@@ -424,24 +424,23 @@ def search_gmail_for_contacts(agency_name, city=None):
     """Search Gmail for threads mentioning the agency and extract external contacts.
 
     Searches for kickoff calls, calendar invites, and general correspondence
-    with the agency. Returns a dict with best-effort POC and IT contact info.
+    with the agency. Returns a dict with unified contacts array format.
 
     Args:
         agency_name: e.g. "Lansing Police Department"
         city: e.g. "Lansing" (optional, broadens search)
 
     Returns:
-        dict with keys: poc_name, poc_email, it_director, it_email
-        (empty strings if not found)
+        dict with keys:
+            status: "connected", "no_results", or "auth_error"
+            contacts: list of unified contact dicts [{"role", "name", "email", "phone", "title"}]
+            error: error string if status is auth_error
     """
+    from contact_model import normalize_contact
+
     result = {
-        "poc_name": "",
-        "poc_email": "",
-        "poc_phone": "",
-        "it_director": "",
-        "it_email": "",
-        "all_contacts": [],  # every unique external contact found
         "status": "no_results",  # "connected", "no_results", or "auth_error"
+        "contacts": [],  # unified format: [{"role", "name", "email", "phone", "title"}]
         "error": "",
     }
 
@@ -615,36 +614,35 @@ def search_gmail_for_contacts(agency_name, city=None):
         if not c.get("name"):
             c["name"] = _name_from_email(c["email"])
 
-    result["all_contacts"] = unique_contacts
-
-    # Heuristic assignment:
-    # - First external contact found = POC (most likely the person on the kickoff)
-    # - Any contact with IT-related keywords in name or email = IT contact
+    # Assign roles using heuristic:
+    # - Any contact with IT-related keywords in name or email = IT
+    # - Others = POC
     it_keywords = re.compile(r'\b(it|tech|information.technology|systems|network|infra)\b', re.IGNORECASE)
 
+    unified_contacts = []
     for contact in unique_contacts:
         name = contact["name"]
         email = contact["email"]
         title = contact.get("title", "")
         phone = contact.get("phone", "")
 
+        # Assign role based on heuristics
         if it_keywords.search(name) or it_keywords.search(email.split("@")[0]) or it_keywords.search(title):
-            if not result["it_director"]:
-                result["it_director"] = name
-                result["it_email"] = email
+            role = "IT"
         else:
-            if not result["poc_name"]:
-                result["poc_name"] = name
-                result["poc_email"] = email
-                result["poc_phone"] = phone
+            role = "POC"
 
-    # If we found contacts but none matched IT keywords, still populate POC
-    if not result["poc_name"] and unique_contacts:
-        first = unique_contacts[0]
-        result["poc_name"] = first["name"]
-        result["poc_email"] = first["email"]
-        result["poc_phone"] = first.get("phone", "")
+        # Normalize and add to contacts array
+        normalized = normalize_contact(
+            role=role,
+            name=name,
+            email=email,
+            phone=phone,
+            title=title
+        )
+        unified_contacts.append(normalized)
 
+    result["contacts"] = unified_contacts
     return result
 
 
