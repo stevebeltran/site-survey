@@ -1675,6 +1675,7 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
 
                     total_cs = len(st.session_state.candidate_sites)
                     for cs_idx, cs in enumerate(st.session_state.candidate_sites, start=1):
+                        _set_phase("Building workspace", status="active")
                         status.update(label=f"Enriching site {cs_idx}/{total_cs} with GIS data...")
                         _set_sidebar_activity(
                             f"Enriching site {cs_idx}/{total_cs}",
