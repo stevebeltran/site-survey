@@ -1588,8 +1588,8 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                     "Analyzing detected sites",
                     f"Running infrastructure analysis for {len(site_data)} site(s).",
                 )
+                _set_phase("Analyzing sites", status="active")
                 for i, site in enumerate(site_data):
-                    _set_phase("Analyzing sites", status="active")
                     status.update(label=f"Analyzing site {i+1}/{len(site_data)}")
                     _step_placeholder.write(f"🔎 Site {i+1}: Running infrastructure detection...")
                     _set_sidebar_activity(
@@ -1675,7 +1675,6 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
 
                     total_cs = len(st.session_state.candidate_sites)
                     for cs_idx, cs in enumerate(st.session_state.candidate_sites, start=1):
-                        _set_phase(f"Building workspace", status="active")
                         status.update(label=f"Enriching site {cs_idx}/{total_cs} with GIS data...")
                         _set_sidebar_activity(
                             f"Enriching site {cs_idx}/{total_cs}",
