@@ -615,6 +615,48 @@ def _coords_close(a, b, tol=1e-6):
     return abs(a[0] - b[0]) < tol and abs(a[1] - b[1]) < tol
 
 
+def _draw_dashed_line(draw, points, color, width=2, dash_length=6, gap_length=4):
+    """Draw a dashed line using a series of short segments, maintaining pattern across edges."""
+    if len(points) < 2:
+        return
+
+    dash_pos = 0
+    drawing = True
+    cycle_length = dash_length + gap_length
+
+    for i in range(len(points) - 1):
+        x1, y1 = points[i]
+        x2, y2 = points[i + 1]
+
+        dx = x2 - x1
+        dy = y2 - y1
+        dist = math.sqrt(dx * dx + dy * dy)
+
+        if dist == 0:
+            continue
+
+        edge_pos = 0
+        while edge_pos < dist:
+            phase = dash_pos % cycle_length
+            is_drawing = phase < dash_length
+            remaining_in_phase = (dash_length if is_drawing else gap_length) - (dash_pos % (dash_length if is_drawing else gap_length))
+            segment_length = min(remaining_in_phase, dist - edge_pos)
+
+            t_start = edge_pos / dist
+            t_end = (edge_pos + segment_length) / dist
+
+            segment_x1 = x1 + dx * t_start
+            segment_y1 = y1 + dy * t_start
+            segment_x2 = x1 + dx * t_end
+            segment_y2 = y1 + dy * t_end
+
+            if is_drawing:
+                draw.line([(segment_x1, segment_y1), (segment_x2, segment_y2)], fill=color, width=width)
+
+            edge_pos += segment_length
+            dash_pos += segment_length
+
+
 def _infer_city_state(site_data_list):
     """Infer a shared city/state label for the exported map from site records."""
     if not site_data_list:
@@ -902,8 +944,8 @@ def draw_styled_map(site_data_list, output_map_path):
         if len(ring) < 3:
             continue
         points = [to_panel_px(lat, lon) for lon, lat in ring]
-        overlay_draw.polygon(points, fill=(75, 123, 178, 50), outline=(39, 86, 132, 180))
-        overlay_draw.line(points + [points[0]], fill=(39, 86, 132, 190), width=3)
+        closed_points = points + [points[0]]
+        overlay_draw.polygon(points, fill=(59, 130, 246, 15), outline=None)
 
     # Rings are rendered on a separate alpha layer so road labels remain visible beneath them.
     placed_label_boxes = []
@@ -969,8 +1011,8 @@ def draw_styled_map(site_data_list, output_map_path):
             if len(ring) < 3:
                 continue
             points = [to_panel_px(lat, lon) for lon, lat in ring]
-            boundary_draw.line(points + [points[0]], fill=(255, 255, 255, 235), width=8)
-            boundary_draw.line(points + [points[0]], fill=(30, 64, 175, 245), width=4)
+            closed_points = points + [points[0]]
+            _draw_dashed_line(boundary_draw, closed_points, color=(30, 64, 175, 255), width=3, dash_length=10, gap_length=6)
 
     for idx, site in enumerate(valid_sites, start=1):
         px, py = to_px(site["latitude"], site["longitude"])
