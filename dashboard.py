@@ -8,6 +8,7 @@ import streamlit as st
 import pandas as pd
 from PIL import Image
 import datetime
+import time
 from zoneinfo import ZoneInfo
 from google_drive import get_drive_manager
 from gmail_lookup import search_gmail_for_contacts
@@ -253,6 +254,45 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+def _set_phase(name: str, status: str = "active"):
+    """Update current processing phase in session state."""
+    st.session_state._processing_phase = {
+        "name": name,
+        "start_time": time.time(),
+        "status": status,
+    }
+
+def _render_phase_indicator():
+    """Render persistent phase tracker showing current phase and elapsed time."""
+    phase = st.session_state.get("_processing_phase", {})
+    if not phase or not phase.get("name"):
+        return
+
+    name = phase.get("name", "Idle")
+    status = phase.get("status", "active")
+    start_time = phase.get("start_time")
+
+    # Calculate elapsed time
+    if start_time:
+        elapsed_seconds = int(time.time() - start_time)
+        minutes = elapsed_seconds // 60
+        seconds = elapsed_seconds % 60
+        elapsed_str = f"({minutes}m {seconds:02d}s)"
+    else:
+        elapsed_str = ""
+
+    # Status emoji
+    emoji_map = {
+        "active": "🔵",
+        "waiting": "⚪",
+        "pending": "🟡",
+        "complete": "✅",
+    }
+    emoji = emoji_map.get(status, "🔵")
+
+    # Render phase indicator
+    st.markdown(f"**{emoji} {name} {elapsed_str}**", unsafe_allow_html=False)
 
 # Session State Initialization
 if "processed_sites" not in st.session_state:
