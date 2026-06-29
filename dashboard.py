@@ -1549,6 +1549,7 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                 except Exception:
                     pass
 
+                _set_phase("Processing photos", status="active")
                 _step_placeholder.write("🔍 Extracting EXIF metadata and clustering by GPS...")
                 _set_sidebar_activity(
                     "Processing survey photos",
