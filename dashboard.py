@@ -1223,13 +1223,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# Phase indicator
-col_logo, col_phase = st.columns([1, 3])
-with col_logo:
-    pass  # Logo already renders above
-with col_phase:
-    st.markdown("---")
-    _render_phase_indicator()
+# Phase indicator moved after upload block to show current state
 
 _overview = _mission_overview()
 st.markdown(
@@ -1708,6 +1702,10 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                 _set_upload_processing_state("error", file_count=len(uploaded_files))
                 _set_sidebar_activity("Processing failed", str(e), state="error")
                 st.error(f"Processing failed: {e}")
+
+# Phase indicator display after upload processing
+st.markdown("---")
+_render_phase_indicator()
 
 if st.session_state.processed_sites:
     if "_poc_uid_counter" not in st.session_state:
