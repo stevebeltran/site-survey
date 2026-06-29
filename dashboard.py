@@ -257,9 +257,10 @@ st.markdown("""
 
 def _set_phase(name: str, status: str = "active"):
     """Update current processing phase in session state."""
+    current = st.session_state.get("_processing_phase", {})
     st.session_state._processing_phase = {
         "name": name,
-        "start_time": time.time(),
+        "start_time": current.get("start_time") if current.get("name") == name else time.time(),
         "status": status,
     }
 
@@ -1569,6 +1570,7 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                 if not site_data:
                     st.warning("No images with GPS metadata were found in the uploaded files.")
 
+                _set_phase("Analyzing sites", status="active")
                 _step_placeholder.write(f"🏗️ Analyzing infrastructure for {len(site_data)} site(s)...")
                 _set_sidebar_activity(
                     "Analyzing detected sites",
