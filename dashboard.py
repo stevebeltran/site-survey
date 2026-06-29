@@ -267,7 +267,7 @@ def _set_phase(name: str, status: str = "active"):
 def _render_phase_indicator():
     """Render persistent phase tracker showing current phase and elapsed time."""
     phase = st.session_state.get("_processing_phase", {})
-    if not phase or not phase.get("name"):
+    if not phase:
         return
 
     name = phase.get("name", "Idle")
