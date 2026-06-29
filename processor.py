@@ -75,6 +75,8 @@ def _extract_gps_with_exifread(image_path):
         alt_tag = tags.get('GPS GPSAltitude')
         if alt_tag:
             alt_value = getattr(alt_tag, 'values', alt_tag)
+            if isinstance(alt_value, list) and len(alt_value) > 0:
+                alt_value = alt_value[0]
             altitude = _exifread_ratio_to_float(alt_value)
 
         capture_time = None
