@@ -87,7 +87,7 @@ class TestDynamicReport:
         finally:
             os.unlink(output_path)
 
-    def test_report_includes_manual_contact_rows(self):
+    def test_report_generates_without_point_of_contact_section(self):
         sites = [_make_candidate()]
         customer_info = {
             "agency_name": "Chicago PD",
@@ -121,18 +121,6 @@ class TestDynamicReport:
             with patch("reporter.query_city_boundary", return_value=None), \
                  patch("reporter._build_tile_basemap", return_value=(basemap, 13)):
                 result = generate_candidate_site_report(sites, output_path, customer_info=customer_info)
-            from docx import Document
-
-            doc = Document(result)
-            table_text = "\n".join(
-                cell.text
-                for table in doc.tables
-                for row in table.rows
-                for cell in row.cells
-            )
-            assert "Alex Carter" in table_text
-            assert "alex@example.com" in table_text
-            assert "Jordan Tech" in table_text
-            assert "jordan@example.com" in table_text
+            assert os.path.exists(result)
         finally:
             os.unlink(output_path)

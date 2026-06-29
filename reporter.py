@@ -17,7 +17,6 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from geopy.distance import geodesic
 from PIL import Image, ImageDraw, ImageFont
-from contact_model import extract_contact_for_report_role
 
 logger = logging.getLogger(__name__)
 
@@ -1463,24 +1462,14 @@ def _find_contact_row(customer_info, role_name):
 
 
 def _format_role_contact(customer_info, role_name, name_key, email_key, phone_key=None, default="DNA"):
-    """Prefer structured contact rows, then flat legacy keys, then DNA.
-
-    Uses extract_contact_for_report_role from contact_model for unified format support.
-    Falls back to legacy flat fields for backward compatibility.
-    """
+    """Prefer structured contact rows, then flat legacy keys, then DNA."""
     customer_info = customer_info or {}
-
-    # Try to extract from unified contacts array using contact_model
-    contacts = customer_info.get("contacts", [])
-    name, email, phone = extract_contact_for_report_role(contacts, role_name)
-
-    # Fallback to legacy flat fields if not found in unified array
-    if not name:
-        name = (customer_info.get(name_key) or "").strip()
-    if not email:
-        email = (customer_info.get(email_key) or "").strip()
-    if not phone and phone_key:
-        phone = (customer_info.get(phone_key) or "").strip()
+    contact = _find_contact_row(customer_info, role_name)
+    name = (contact.get("name") or customer_info.get(name_key) or "").strip()
+    email = (contact.get("email") or customer_info.get(email_key) or "").strip()
+    phone = ""
+    if phone_key:
+        phone = (contact.get("phone") or customer_info.get(phone_key) or "").strip()
 
     lines = [value for value in (name, email, phone) if value]
     return "\n".join(lines) if lines else default
@@ -1555,8 +1544,14 @@ def _add_poc_table(doc, customer_info):
     h_run.font.color.rgb = RGBColor(0, 0, 0)
 
     rows = [
+        ("Agency Name\nAgency Address", _format_contact_block(
+            _get_contact_value(customer_info, "agency_name", ""),
+            _get_contact_value(customer_info, "agency_address", ""),
+        )),
         ("Point of Contact\n(Name, E-Mail, Phone #)", _format_contact_block(
-            *_format_role_contact(customer_info, "POC", "poc_name", "poc_email", "poc_phone").split("\n")
+            _get_contact_value(customer_info, "poc_name", ""),
+            _get_contact_value(customer_info, "poc_email", ""),
+            _get_contact_value(customer_info, "poc_phone", ""),
         )),
         ("RTCC/RTIC\n(Name, E-Mail, Phone #)", _format_contact_block(
             *_format_role_contact(customer_info, "RTCC", "rtcc_name", "rtcc_email", "rtcc_phone").split("\n")
@@ -1663,11 +1658,7 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
         doc.add_picture(map_image_path, width=Inches(6.0))
         doc.add_paragraph()
         
-    # 2. Points of Contact Table
-    doc.add_page_break()
-    _add_poc_table(doc, customer_info)
-
-    # 3. Installation Timeframe
+    # 2. Installation Timeframe
     delivery_target = customer_info.get("survey_delivery_target", "TBD")
     follow_up = customer_info.get("follow_up_requirements", "") or "Infrastructure checklist completion prior to hardware delivery"
     action_items = customer_info.get("action_items", "") or "Confirm ethernet and dedicated power connectivity is established 30 days before installation."
@@ -1706,10 +1697,8 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
 
         # Site Details
         building_height = site.get('building_height')
-        building_height_source = site.get('building_height_source', 'Unknown')
         if building_height:
             height_str = f"{building_height:.0f} ft" if isinstance(building_height, (int, float)) else str(building_height)
-            height_str = f"{height_str} ({building_height_source})"
         else:
             height_str = "Assessment required"
 
@@ -1849,12 +1838,6 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
             customer_info["report_date"] = _format_report_date(survey_date)
         surveyor = customer_info.get("surveyor", surveyor)
 
-    # Display metadata at top
-    doc.add_paragraph(f"Agency: {agency}")
-    doc.add_paragraph(f"Survey Date: {_format_report_date(survey_date)}")
-    doc.add_paragraph(f"Surveyor: {surveyor}")
-    doc.add_paragraph(f"Candidate Sites Found: {len(candidate_sites)}")
-
     _progress("Generating site map visualization...")
     doc.add_paragraph().add_run("Site Detail & Map Visualisation").bold = True
     map_image_path = os.path.join(os.path.dirname(output_filepath), "dfr_site_map.png")
@@ -1863,7 +1846,11 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
         doc.add_picture(map_image_path, width=Inches(6.0))
         doc.add_paragraph()
 
-    _add_poc_table(doc, customer_info)
+    doc.add_paragraph(f"Agency: {agency}")
+    doc.add_paragraph(f"Survey Date: {_format_report_date(survey_date)}")
+    doc.add_paragraph(f"Surveyor: {surveyor}")
+    doc.add_paragraph(f"Candidate Sites Found: {len(candidate_sites)}")
+
     doc.add_page_break()
 
     # ── 2. Candidate Site Sections ──
@@ -1873,17 +1860,13 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
 
         # 2a. Site Overview
         doc.add_heading("Site Overview", level=2)
-        height_display = "—"
-        if site.structure.building_height:
-            source = site.structure.building_height_source or "Unknown"
-            height_display = f"{site.structure.building_height} ft ({source})"
         overview_data = [
             ["Site ID", site.identity.site_id],
             ["Address", site.identity.site_address],
             ["Latitude", str(site.identity.site_latitude)],
             ["Longitude", str(site.identity.site_longitude)],
             ["Elevation", f"{site.identity.site_elevation} ft" if site.identity.site_elevation else "—"],
-            ["Building Height", height_display],
+            ["Building Height", f"{site.structure.building_height} ft" if site.structure.building_height else "—"],
             ["Roof Type", site.structure.roof_type or "—"],
         ]
         add_styled_table(doc, overview_data, ["Field", "Value"])
