@@ -1773,13 +1773,54 @@ with st.container(border=True):
             st.metric("Contacts", len(st.session_state.customer_info.get("contacts", [])))
 
     with agency_tabs[1]:
-        st.markdown("**Manual Contacts**")
-        contacts_df = pd.DataFrame(st.session_state.customer_info.get("contacts", []))
-        if not contacts_df.empty:
-            st.dataframe(contacts_df, width="stretch", hide_index=True)
+        # Contacts tab - show unified contacts array with role-based filtering
+        st.markdown("**All Contacts**")
+
+        contacts = st.session_state.customer_info.get("contacts", [])
+
+        if contacts:
+            # Get unique roles for filtering
+            roles = sorted(set(c.get("role", "Other") for c in contacts if c.get("role")))
+
+            # Add role filter
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                selected_role = st.selectbox(
+                    "Filter by Role",
+                    options=["All Roles"] + roles,
+                    key="contacts_role_filter"
+                )
+
+            # Filter contacts by selected role
+            if selected_role == "All Roles":
+                filtered_contacts = contacts
+            else:
+                filtered_contacts = [c for c in contacts if c.get("role") == selected_role]
+
+            # Display contacts in a formatted table
+            if filtered_contacts:
+                # Create a display-friendly dataframe
+                display_contacts = []
+                for contact in filtered_contacts:
+                    display_contacts.append({
+                        "Role": contact.get("role", "Other"),
+                        "Name": contact.get("name", ""),
+                        "Email": contact.get("email", ""),
+                        "Phone": contact.get("phone", ""),
+                        "Title": contact.get("title", "")
+                    })
+
+                contacts_df = pd.DataFrame(display_contacts)
+                st.dataframe(contacts_df, width="stretch", hide_index=True, use_container_width=True)
+
+                st.caption(f"Showing {len(filtered_contacts)} contact(s)")
+            else:
+                st.info(f"No contacts found with role '{selected_role}'")
         else:
-            st.info("No manual contacts loaded yet. Use the Survey Pipeline tab to populate contacts.")
-        st.caption("Contact editing available in the Survey Pipeline tab.")
+            st.info("No contacts loaded yet. Contacts are populated when you run the Survey Pipeline or pull from Gmail.")
+
+        st.divider()
+        st.caption("Edit contacts in the **Survey Pipeline** tab under 'Agency Information'.")
 
     with agency_tabs[2]:
         dep_cols = st.columns(3)
