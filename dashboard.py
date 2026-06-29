@@ -378,6 +378,19 @@ if "sidebar_activity" not in st.session_state:
         "detail": "Waiting for the next task.",
     }
 
+# Initialize phase tracking
+if "_processing_phase" not in st.session_state:
+    st.session_state._processing_phase = {
+        "name": "Idle",
+        "start_time": None,
+        "status": "waiting",
+    }
+
+# Mark processing complete if we have processed sites
+if st.session_state.processed_sites and st.session_state._processing_phase.get("status") != "complete":
+    st.session_state._processing_phase["status"] = "complete"
+    st.session_state._processing_phase["name"] = "Complete"
+
 SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tiff", ".webp", ".heic", ".heif")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 _sidebar_activity_placeholder = None
@@ -1570,13 +1583,13 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                 if not site_data:
                     st.warning("No images with GPS metadata were found in the uploaded files.")
 
-                _set_phase("Analyzing sites", status="active")
                 _step_placeholder.write(f"🏗️ Analyzing infrastructure for {len(site_data)} site(s)...")
                 _set_sidebar_activity(
                     "Analyzing detected sites",
                     f"Running infrastructure analysis for {len(site_data)} site(s).",
                 )
                 for i, site in enumerate(site_data):
+                    _set_phase("Analyzing sites", status="active")
                     status.update(label=f"Analyzing site {i+1}/{len(site_data)}")
                     _step_placeholder.write(f"🔎 Site {i+1}: Running infrastructure detection...")
                     _set_sidebar_activity(
@@ -1649,6 +1662,7 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
 
                 st.session_state.candidate_sites = []
                 if site_data:
+                    _set_phase("Building workspace", status="active")
                     status.update(label="Building candidate sites...")
                     _set_sidebar_activity(
                         "Building candidate sites",
@@ -1661,6 +1675,7 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
 
                     total_cs = len(st.session_state.candidate_sites)
                     for cs_idx, cs in enumerate(st.session_state.candidate_sites, start=1):
+                        _set_phase(f"Building workspace", status="active")
                         status.update(label=f"Enriching site {cs_idx}/{total_cs} with GIS data...")
                         _set_sidebar_activity(
                             f"Enriching site {cs_idx}/{total_cs}",
@@ -1676,6 +1691,7 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
 
                         enrich_gis(cs, progress_callback=_gis_progress)
 
+                _set_phase("Rendering dashboard", status="active")
                 status.update(label="Finalizing map and dashboard...", expanded=True)
                 _set_sidebar_activity(
                     "Finalizing survey workspace",
