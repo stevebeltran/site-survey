@@ -24,6 +24,43 @@ def search_department_calendar_events(dept_name: str, dept_domain: str):
     return _search_department_calendar_events(dept_name, dept_domain)
 
 
+def _contact_identity(contact: dict) -> tuple:
+    email = (contact.get("email") or "").strip().lower()
+    if email:
+        return ("email", email)
+
+    name = (contact.get("name") or "").strip().lower()
+    phone = (contact.get("phone") or "").strip()
+    if name or phone:
+        return ("fallback", name, phone)
+
+    return ("empty",)
+
+
+def _merge_contacts(*contact_lists: list) -> list:
+    """Merge and dedupe contacts while ensuring `poc_role` is present."""
+    merged = []
+    seen = set()
+
+    for contacts in contact_lists:
+        for contact in contacts or []:
+            identity = _contact_identity(contact)
+            if identity in seen:
+                continue
+            seen.add(identity)
+
+            normalized = {
+                "name": contact.get("name", ""),
+                "email": contact.get("email", ""),
+                "title": contact.get("title", ""),
+                "phone": contact.get("phone", ""),
+            }
+            normalized["poc_role"] = contact.get("poc_role") or assign_contact_to_role(normalized)
+            merged.append(normalized)
+
+    return merged
+
+
 def fetch_agency_docs_parallel(dept_name: str, dept_domain: str, session_state: dict, city_hint: str | None = None) -> dict:
     """Fetch agency documents, contacts, and events in parallel.
 
@@ -32,7 +69,7 @@ def fetch_agency_docs_parallel(dept_name: str, dept_domain: str, session_state: 
     2. Google Drive: search for department documents
     3. Google Calendar: search for department events
 
-    Uses ThreadPoolExecutor with max_workers=3 and 5-second timeout per lookup.
+    Uses ThreadPoolExecutor with max_workers=3 and 15-second timeout per lookup.
     If any lookup times out or fails, error is recorded but other lookups continue.
 
     Args:
@@ -71,10 +108,7 @@ def fetch_agency_docs_parallel(dept_name: str, dept_domain: str, session_state: 
 
                 contacts_result = _search_gmail_for_contacts(dept_name, city=city_hint)
                 contacts = contacts_result.get("all_contacts", [])
-            # Assign poc_role to each contact using the matcher
-            for contact in contacts:
-                contact["poc_role"] = assign_contact_to_role(contact)
-            return contacts
+            return _merge_contacts(contacts)
         except Exception as e:
             result["errors"]["gmail"] = str(e)
             return []
@@ -110,7 +144,7 @@ def fetch_agency_docs_parallel(dept_name: str, dept_domain: str, session_state: 
         future_drive = executor.submit(fetch_drive)
         future_calendar = executor.submit(fetch_calendar)
 
-        # Collect results as they complete (with 5-second timeout per task)
+        # Collect results as they complete (with 15-second timeout per task)
         futures = {
             future_gmail: "gmail",
             future_drive: "drive",
@@ -118,7 +152,7 @@ def fetch_agency_docs_parallel(dept_name: str, dept_domain: str, session_state: 
         }
 
         try:
-            for future in as_completed(futures, timeout=5.0):
+            for future in as_completed(futures, timeout=15.0):
                 lookup_type = futures[future]
                 try:
                     lookup_result = future.result()
@@ -136,7 +170,12 @@ def fetch_agency_docs_parallel(dept_name: str, dept_domain: str, session_state: 
             # Timeout occurred — record which lookups didn't complete
             for future, lookup_type in futures.items():
                 if not future.done():
-                    result["errors"][lookup_type] = "Lookup timed out after 5 seconds"
+                    result["errors"][lookup_type] = "Lookup timed out after 15 seconds"
                     future.cancel()
+
+    invite_contacts = []
+    for event in result["events"]:
+        invite_contacts.extend(event.get("contacts", []) or [])
+    result["contacts"] = _merge_contacts(result["contacts"], invite_contacts)
 
     return result

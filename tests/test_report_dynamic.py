@@ -75,3 +75,50 @@ class TestDynamicReport:
             assert os.path.exists(result)
         finally:
             os.unlink(output_path)
+
+    def test_report_includes_manual_contact_rows(self):
+        sites = [_make_candidate()]
+        customer_info = {
+            "agency_name": "Chicago PD",
+            "contacts": [
+                {
+                    "role": "POC",
+                    "name": "Alex Carter",
+                    "title": "Captain",
+                    "email": "alex@example.com",
+                    "phone": "222-333-4444",
+                },
+                {
+                    "role": "Facilities",
+                    "name": "Jordan Tech",
+                    "title": "Engineer",
+                    "email": "jordan@example.com",
+                    "phone": "999-111-2222",
+                },
+            ],
+            "poc_name": "",
+            "poc_email": "",
+            "poc_phone": "",
+            "facilities_engineer": "",
+            "facilities_email": "",
+            "facilities_phone": "",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as f:
+            output_path = f.name
+        try:
+            result = generate_candidate_site_report(sites, output_path, customer_info=customer_info)
+            from docx import Document
+
+            doc = Document(result)
+            table_text = "\n".join(
+                cell.text
+                for table in doc.tables
+                for row in table.rows
+                for cell in row.cells
+            )
+            assert "Alex Carter" in table_text
+            assert "alex@example.com" in table_text
+            assert "Jordan Tech" in table_text
+            assert "jordan@example.com" in table_text
+        finally:
+            os.unlink(output_path)

@@ -12,7 +12,11 @@ from zoneinfo import ZoneInfo
 from google_drive import get_drive_manager
 from gmail_lookup import search_gmail_for_contacts
 from agency_docs import fetch_agency_docs_parallel
-from dashboard_metrics import count_connected_sources, count_contacts
+from dashboard_metrics import (
+    count_connected_sources,
+    count_contacts,
+    get_connected_source_statuses,
+)
 import google_oauth
 
 try:
@@ -510,6 +514,35 @@ def _set_sidebar_activity(label, detail="", state="running"):
     _render_sidebar_activity()
 
 
+def _set_upload_processing_state(state, *, site_count=None, file_count=None):
+    """Track whether upload processing is still computing, finalizing UI, or done."""
+    st.session_state["_upload_processing_state"] = state
+    summary = dict(st.session_state.get("_upload_processing_summary", {}))
+    if site_count is not None:
+        summary["site_count"] = site_count
+    if file_count is not None:
+        summary["file_count"] = file_count
+    st.session_state["_upload_processing_summary"] = summary
+    st.session_state["_upload_processing_complete"] = state == "complete"
+
+
+def _finalize_upload_processing_if_ready():
+    """Mark upload processing complete only after the full UI render pass succeeds."""
+    if st.session_state.get("_upload_processing_state") != "finalizing":
+        return
+
+    summary = st.session_state.get("_upload_processing_summary", {})
+    site_count = summary.get("site_count", len(st.session_state.get("processed_sites", [])))
+    file_count = summary.get("file_count", st.session_state.get("_last_uploaded_file_count", 0))
+    _set_sidebar_activity(
+        "Processing complete",
+        f"Processed {site_count} site(s) from {file_count} uploaded file(s).",
+        state="complete",
+    )
+    _set_upload_processing_state("complete", site_count=site_count, file_count=file_count)
+    st.rerun()
+
+
 def _get_displayable_image_path(image_path, site_folder=None):
     """Return a browser-safe image path for Streamlit display, or None if unreadable.
 
@@ -604,6 +637,21 @@ def _lookup_contacts_from_gmail(agency_name, city=None):
     return search_gmail_for_contacts(agency_name, city)
 
 
+def _render_jira_ticket_results(jira_results):
+    """Render Jira search results as a compact ticket table."""
+    tickets = jira_results.get("tickets", [])
+    if not tickets:
+        return
+
+    search_terms = jira_results.get("search_terms", [])
+    with st.expander("Jira tickets found", expanded=True):
+        if search_terms:
+            st.caption("Search terms: " + ", ".join(search_terms))
+        df = pd.DataFrame(tickets)
+        display_cols = [col for col in ["key", "summary", "status", "assignee", "url"] if col in df.columns]
+        st.dataframe(df[display_cols], width="stretch", hide_index=True)
+
+
 def _run_connected_docs_search(agency, city=""):
     """Run Gmail + Drive + Jira + HubSpot search and store results in session state.
 
@@ -625,6 +673,7 @@ def _run_connected_docs_search(agency, city=""):
         found = contacts.get("all_contacts", [])
         if found:
             st.session_state["gmail_found_contacts"] = found
+            st.session_state["agency_contacts"] = found
         for key in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email"):
             if contacts.get(key):
                 st.session_state.customer_info[key] = contacts[key]
@@ -658,6 +707,7 @@ def _run_connected_docs_search(agency, city=""):
     _set_sidebar_activity("Looking up connected docs", f"Searching Jira for {agency}.")
     jira_results = search_jira_for_tickets(
         agency,
+        city=city or None,
         jira_url=st.session_state.get("_jira_url", ""),
         jira_email=st.session_state.get("_jira_email", ""),
         jira_token=st.session_state.get("_jira_token", ""),
@@ -667,6 +717,7 @@ def _run_connected_docs_search(agency, city=""):
         _append_integration_log(
             f"[Jira API] Found {len(jira_results['tickets'])} tickets for {agency}"
         )
+        _render_jira_ticket_results(jira_results)
         found_any = True
     elif jira_results["status"] == "error":
         _append_integration_log(f"[Jira API] Error: {jira_results['error']}")
@@ -699,6 +750,44 @@ def _run_connected_docs_search(agency, city=""):
         found_any = True
     elif calendar_results["status"] == "auth_error":
         _append_integration_log(f"[Calendar API] Auth error: {calendar_results.get('error', '')}")
+
+    # Department-level docs, events, and invite contacts
+    _set_sidebar_activity(
+        "Looking up connected docs",
+        f"Searching department docs and calendar invites for {agency}.",
+    )
+    parallel_result = fetch_agency_docs_parallel(
+        agency,
+        "",
+        st.session_state,
+        city_hint=city or None,
+    )
+    parallel_contacts = parallel_result.get("contacts", [])
+    if parallel_contacts:
+        st.session_state["agency_contacts"] = parallel_contacts
+        found_any = True
+    st.session_state["agency_docs"] = parallel_result.get("docs", [])
+    if st.session_state["agency_docs"]:
+        found_any = True
+    st.session_state["agency_calendar"] = parallel_result.get("events", [])
+    if not st.session_state["agency_calendar"] and calendar_results.get("status") == "connected":
+        st.session_state["agency_calendar"] = [
+            {
+                "name": event.get("title", "Unknown"),
+                "date": event.get("date", "Unknown"),
+                "time": event.get("time", ""),
+                "attendee_count": event.get("attendees_count", 0),
+                "url": event.get("url", ""),
+            }
+            for event in calendar_results.get("events", [])
+        ]
+    if st.session_state["agency_calendar"]:
+        st.session_state["calendar_results"] = {
+            "status": "connected",
+            "events": st.session_state["agency_calendar"],
+        }
+        found_any = True
+    st.session_state["agency_docs_errors"] = parallel_result.get("errors", {})
 
     st.session_state._last_doc_search_agency = agency
     _set_sidebar_activity(
@@ -801,7 +890,7 @@ def render_poc_table(contacts: list):
             })
 
     df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
 
 
 def render_drive_docs_table(docs: list):
@@ -827,7 +916,23 @@ def render_drive_docs_table(docs: list):
         })
 
     df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
+
+
+def render_link_list(items: list, *, title_key: str, url_key: str, empty_message: str, detail_keys: list[str] | None = None):
+    """Render a compact list of clickable links with optional detail text."""
+    linked_items = [item for item in (items or []) if item.get(url_key)]
+    if not linked_items:
+        st.caption(empty_message)
+        return
+
+    for item in linked_items:
+        title = escape(str(item.get(title_key, "Unknown")))
+        url = item.get(url_key, "")
+        st.markdown(f"- [{title}]({url})")
+        details = [str(item.get(key, "")).strip() for key in (detail_keys or []) if str(item.get(key, "")).strip()]
+        if details:
+            st.caption(" | ".join(details))
 
 
 def render_calendar_events_table(events: list):
@@ -854,7 +959,7 @@ def render_calendar_events_table(events: list):
         })
 
     df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
 
 
 def _render_kpi_cards():
@@ -862,6 +967,11 @@ def _render_kpi_cards():
     overview = _mission_overview()
     connected_sources = count_connected_sources(st.session_state)
     contacts_count = count_contacts(st.session_state)
+    source_statuses = get_connected_source_statuses(
+        st.session_state,
+        google_authenticated=google_oauth.is_authenticated(),
+        slack_configured=bool(st.session_state.get("_slack_webhook")),
+    )
     cols = st.columns(4)
     metrics = [
         ("Loaded Sites", overview["sites"], None),
@@ -872,6 +982,10 @@ def _render_kpi_cards():
     for col, (label, value, delta) in zip(cols, metrics):
         with col:
             st.metric(label, value, delta=delta)
+    st.caption(
+        "Connected source details: "
+        + " | ".join(f"{name}: {status}" for name, status in source_statuses)
+    )
 
 
 def _render_workflow_tracker():
@@ -1080,6 +1194,7 @@ with st.sidebar:
         st.session_state["_jira_url"] = jira_url
         st.session_state["_jira_email"] = jira_email
         st.session_state["_jira_token"] = jira_token
+        st.session_state["_slack_webhook"] = slack_webhook
 
     st.info("💡 Mocks are enabled automatically for unset credentials.")
 
@@ -1173,6 +1288,8 @@ def _on_files_changed():
     st.session_state.pop("gps_detected_agency", None)
     st.session_state.pop("_auto_processed", None)
     st.session_state.pop("_upload_processing_complete", None)
+    st.session_state.pop("_upload_processing_state", None)
+    st.session_state.pop("_upload_processing_summary", None)
     st.session_state.pop("city_boundary_geojson", None)
     st.session_state.pop("candidate_sites", None)
 
@@ -1327,6 +1444,7 @@ uploaded_files, client_name, proximity_radius = _render_survey_upload_block(
 # dashboard in a stale pre-processing state.
 if uploaded_files and not st.session_state.get("_auto_processed"):
     st.session_state._auto_processed = True
+    _set_upload_processing_state("processing", file_count=len(uploaded_files))
     _set_sidebar_activity(
         "Processing survey photos",
         f"Preparing {len(uploaded_files)} uploaded file(s).",
@@ -1495,17 +1613,20 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
 
                         enrich_gis(cs, progress_callback=_gis_progress)
 
-                status.update(label="Processing complete!", state="complete", expanded=False)
+                status.update(label="Finalizing map and dashboard...", expanded=True)
                 _set_sidebar_activity(
-                    "Processing complete",
-                    f"Processed {len(site_data)} site(s) from {len(uploaded_files)} uploaded file(s).",
-                    state="complete",
+                    "Finalizing survey workspace",
+                    "Rendering the site map and post-processing workspace.",
                 )
-                st.session_state["_upload_processing_complete"] = True
+                _set_upload_processing_state(
+                    "finalizing",
+                    site_count=len(site_data),
+                    file_count=len(uploaded_files),
+                )
                 st.rerun()
             except Exception as e:
                 status.update(label="Processing failed", state="error")
-                st.session_state["_upload_processing_complete"] = True
+                _set_upload_processing_state("error", file_count=len(uploaded_files))
                 _set_sidebar_activity("Processing failed", str(e), state="error")
                 st.error(f"Processing failed: {e}")
 
@@ -1564,7 +1685,12 @@ with st.container(border=True):
                     if not agency:
                         st.warning("Enter or detect an Agency Name first.")
                     else:
-                        st.session_state._last_doc_search_agency = ""
+                        city_hint = ""
+                        agency_address = st.session_state.customer_info.get("agency_address", "")
+                        if agency_address:
+                            city_hint = processor.extract_city_from_address(agency_address) or ""
+                        with st.spinner("Refreshing connected docs..."):
+                            _run_connected_docs_search(agency, city_hint)
                         st.rerun()
             else:
                 google_oauth.render_connect_button("Connect Google for Gmail & Drive Lookup")
@@ -1582,6 +1708,10 @@ with st.container(border=True):
         agency_contacts = st.session_state.get("agency_contacts", [])
         if agency_contacts:
             render_poc_table(agency_contacts)
+            st.markdown("**Connected Contact Feed**")
+            connected_contacts_df = pd.DataFrame(agency_contacts)
+            if not connected_contacts_df.empty:
+                st.dataframe(connected_contacts_df, width="stretch", hide_index=True)
         elif st.session_state.get("agency_docs_loading"):
             st.info("Connected docs lookup in progress.")
         else:
@@ -1590,7 +1720,7 @@ with st.container(border=True):
         st.markdown("**Manual Contacts**")
         contacts_df = pd.DataFrame(st.session_state.customer_info.get("contacts", []))
         if not contacts_df.empty:
-            st.dataframe(contacts_df, use_container_width=True, hide_index=True)
+            st.dataframe(contacts_df, width="stretch", hide_index=True)
         else:
             st.info("No manual contacts loaded yet. Use the Survey Pipeline tab or Gmail lookup to populate contacts.")
         st.caption("Contact editing remains available in the Survey Pipeline for compatibility.")
@@ -1673,16 +1803,35 @@ with st.container(border=True):
                         st.caption(f"- {title}")
             else:
                 st.caption("No connected documents yet.")
+            st.markdown("**Document Links**")
+            render_link_list(
+                st.session_state.get("agency_docs", []),
+                title_key="name",
+                url_key="url",
+                empty_message="No linked documents yet.",
+                detail_keys=["owner", "last_modified"],
+            )
             st.markdown("**Drive Search Results**")
             render_drive_docs_table(st.session_state.get("agency_docs", []))
         with docs_cols[1]:
-            st.markdown("**Jira / HubSpot / Calendar**")
-            jira_status = st.session_state.get("jira_results", {}).get("status", "idle")
-            hs_status = st.session_state.get("hubspot_results", {}).get("status", "idle")
-            cal_status = st.session_state.get("calendar_results", {}).get("status", "idle")
-            st.metric("Jira", jira_status)
-            st.metric("HubSpot", hs_status)
-            st.metric("Calendar", cal_status)
+            st.markdown("**Connected Sources**")
+            source_statuses = get_connected_source_statuses(
+                st.session_state,
+                google_authenticated=google_oauth.is_authenticated(),
+                slack_configured=bool(st.session_state.get("_slack_webhook")),
+            )
+            source_cols = st.columns(2)
+            for index, (name, status) in enumerate(source_statuses):
+                with source_cols[index % 2]:
+                    st.metric(name, status)
+            st.markdown("**Calendar Event Links**")
+            render_link_list(
+                st.session_state.get("agency_calendar", []),
+                title_key="name",
+                url_key="url",
+                empty_message="No linked calendar events yet.",
+                detail_keys=["date", "time"],
+            )
             st.markdown("**Calendar Events**")
             render_calendar_events_table(st.session_state.get("agency_calendar", []))
             if st.session_state.get("agency_docs_errors"):
@@ -1691,6 +1840,7 @@ with st.container(border=True):
 # Auto-process on upload - runs once per file set, no manual button needed
 if uploaded_files and not st.session_state.get("_auto_processed"):
     st.session_state._auto_processed = True
+    _set_upload_processing_state("processing", file_count=len(uploaded_files))
 
     with st.container(border=True):
         st.subheader("Processing Status")
@@ -1825,12 +1975,20 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                             _step_placeholder.write(f"🌐 Site {_idx}/{_total}: {step}")
                         enrich_gis(cs, progress_callback=_gis_progress)
 
-                status.update(label="Processing complete!", state="complete", expanded=False)
-                st.session_state["_upload_processing_complete"] = True
+                status.update(label="Finalizing map and dashboard...", expanded=True)
+                _set_sidebar_activity(
+                    "Finalizing survey workspace",
+                    "Rendering the site map and post-processing workspace.",
+                )
+                _set_upload_processing_state(
+                    "finalizing",
+                    site_count=len(site_data),
+                    file_count=len(uploaded_files),
+                )
                 st.rerun()
             except Exception as e:
                 status.update(label="Processing failed", state="error")
-                st.session_state["_upload_processing_complete"] = True
+                _set_upload_processing_state("error", file_count=len(uploaded_files))
                 st.error(f"Processing failed: {e}")
 
 def _render_site_checklist(site, site_idx):
@@ -2488,7 +2646,7 @@ with tab1:
             with st.expander("Report Contact Preview", expanded=False):
                 preview_rows = _report_contact_preview_rows()
                 preview_df = pd.DataFrame(preview_rows, columns=["Field", "Value"])
-                st.dataframe(preview_df, use_container_width=True, hide_index=True)
+                st.dataframe(preview_df, width="stretch", hide_index=True)
                 st.caption("This preview mirrors the report import fields before export.")
             report_name = st.text_input("Master Document Name", value=_default_master_document_name())
             use_new_report = st.checkbox(
@@ -2821,6 +2979,7 @@ with tab3:
                 with st.spinner("Searching Jira..."):
                     jira_results = search_jira_for_tickets(
                         agency,
+                        city=st.session_state.get("customer_info", {}).get("city", "") or None,
                         jira_url=st.session_state.get("_jira_url", ""),
                         jira_email=st.session_state.get("_jira_email", ""),
                         jira_token=st.session_state.get("_jira_token", ""),
@@ -2837,6 +2996,7 @@ with tab3:
                         state="complete",
                     )
                     st.success(f"Found {count} Jira tickets.")
+                    _render_jira_ticket_results(jira_results)
                 elif jira_results["status"] == "no_credentials":
                     _set_sidebar_activity(
                         "Jira search blocked",
@@ -2866,4 +3026,6 @@ with tab4:
             st.text(_format_integration_log(log))
     else:
         st.write("No integration steps executed yet.")
+
+_finalize_upload_processing_if_ready()
 

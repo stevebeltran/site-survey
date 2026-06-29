@@ -12,6 +12,7 @@ from email.utils import parseaddr
 from googleapiclient.discovery import build
 import streamlit as st
 import google_oauth
+import requests
 
 
 # Emails that should never appear as contacts (exact match on lowercased email)
@@ -394,6 +395,29 @@ def _build_search_terms(agency_name, city=None):
             seen.add(key)
             unique.append(t)
     return unique
+
+
+def _infer_city_from_agency_name(agency_name):
+    """Best-effort city extraction from an agency label."""
+    if not agency_name:
+        return ""
+
+    label = str(agency_name).strip()
+    if not label:
+        return ""
+
+    # Prefer the left side of a comma-delimited label like "Zionsville PD, IN".
+    if "," in label:
+        label = label.split(",", 1)[0].strip()
+
+    label = re.sub(
+        r"\b(police department|sheriff's office|sheriffs office|fire department|public safety|department of public safety|pd|so|fd|dps)\b\.?$",
+        "",
+        label,
+        flags=re.IGNORECASE,
+    ).strip()
+    label = re.sub(r"\s+", " ", label)
+    return label
 
 
 def search_gmail_for_contacts(agency_name, city=None):
@@ -849,7 +873,7 @@ def search_drive_for_gemini_notes(agency_name, city=None):
 # Jira: Ticket Search by Agency Name
 # ---------------------------------------------------------------------------
 
-def search_jira_for_tickets(agency_name, jira_url=None, jira_email=None, jira_token=None):
+def search_jira_for_tickets(agency_name, city=None, jira_url=None, jira_email=None, jira_token=None):
     """Search Jira for tickets mentioning the agency name.
 
     Uses Jira REST API v3 with Basic Auth (email + API token).
@@ -867,10 +891,9 @@ def search_jira_for_tickets(agency_name, jira_url=None, jira_email=None, jira_to
             status: "connected", "no_results", "no_credentials", or "error"
             error: error string if request fails
     """
-    import requests
-
     result = {
         "tickets": [],
+        "search_terms": [],
         "status": "no_credentials",
         "error": "",
     }
@@ -881,38 +904,46 @@ def search_jira_for_tickets(agency_name, jira_url=None, jira_email=None, jira_to
     # Clean URL
     jira_url = jira_url.rstrip("/")
 
-    # JQL: search summary and description for agency name
-    jql = f'text ~ "{agency_name}" ORDER BY updated DESC'
+    lookup_city = city or _infer_city_from_agency_name(agency_name)
+    search_terms = _build_search_terms(agency_name, lookup_city)
+    result["search_terms"] = search_terms
+
+    seen_issue_keys = set()
 
     try:
-        resp = requests.get(
-            f"{jira_url}/rest/api/3/search",
-            params={"jql": jql, "maxResults": 20, "fields": "summary,status,assignee"},
-            auth=(jira_email, jira_token),
-            timeout=15,
-        )
-        if resp.status_code == 401:
-            result["status"] = "error"
-            result["error"] = "Jira authentication failed (401). Check email/token."
-            return result
-        if resp.status_code == 403:
-            result["status"] = "error"
-            result["error"] = "Jira access denied (403). Check permissions."
-            return result
-        resp.raise_for_status()
+        for term in search_terms:
+            jql = f'text ~ "{term}" ORDER BY updated DESC'
+            resp = requests.get(
+                f"{jira_url}/rest/api/3/search",
+                params={"jql": jql, "maxResults": 20, "fields": "summary,status,assignee"},
+                auth=(jira_email, jira_token),
+                timeout=15,
+            )
+            if resp.status_code == 401:
+                result["status"] = "error"
+                result["error"] = "Jira authentication failed (401). Check email/token."
+                return result
+            if resp.status_code == 403:
+                result["status"] = "error"
+                result["error"] = "Jira access denied (403). Check permissions."
+                return result
+            resp.raise_for_status()
 
-        data = resp.json()
-        for issue in data.get("issues", []):
-            key = issue.get("key", "")
-            fields = issue.get("fields", {})
-            assignee_obj = fields.get("assignee")
-            result["tickets"].append({
-                "key": key,
-                "summary": fields.get("summary", ""),
-                "status": fields.get("status", {}).get("name", ""),
-                "url": f"{jira_url}/browse/{key}",
-                "assignee": assignee_obj.get("displayName", "") if assignee_obj else "",
-            })
+            data = resp.json()
+            for issue in data.get("issues", []):
+                key = issue.get("key", "")
+                if not key or key in seen_issue_keys:
+                    continue
+                seen_issue_keys.add(key)
+                fields = issue.get("fields", {})
+                assignee_obj = fields.get("assignee")
+                result["tickets"].append({
+                    "key": key,
+                    "summary": fields.get("summary", ""),
+                    "status": fields.get("status", {}).get("name", ""),
+                    "url": f"{jira_url}/browse/{key}",
+                    "assignee": assignee_obj.get("displayName", "") if assignee_obj else "",
+                })
 
         result["status"] = "connected" if result["tickets"] else "no_results"
 
@@ -1245,12 +1276,15 @@ def search_department_calendar_events(dept_name: str, dept_domain: str) -> list:
                 if response_status != "declined" and not attendee.get("resource"):
                     attendee_count += 1
 
+            invite_contacts = _extract_invite_contacts(attendees, dept_domain)
+
             result.append({
                 "name": summary,
                 "date": date_str,
                 "time": time_str,
                 "attendee_count": attendee_count,
                 "url": event.get("htmlLink", ""),
+                "contacts": invite_contacts,
             })
 
     except Exception as e:
@@ -1261,6 +1295,45 @@ def search_department_calendar_events(dept_name: str, dept_domain: str) -> list:
             print(f"Error searching calendar for department events: {e}")
 
     return result
+
+
+def _extract_invite_contacts(attendees: list, dept_domain: str) -> list:
+    """Return contact rows derived from relevant calendar invite attendees."""
+    dept_domain = (dept_domain or "").strip().lower()
+    contacts = []
+    seen = set()
+
+    for attendee in attendees or []:
+        email = (attendee.get("email") or "").strip()
+        email_lower = email.lower()
+        if not email_lower:
+            continue
+        if attendee.get("resource"):
+            continue
+        if "brincdrones.com" in email_lower:
+            continue
+        if dept_domain and dept_domain not in email_lower:
+            continue
+        if _is_blocked_email(email):
+            continue
+
+        name = (attendee.get("displayName") or "").strip()
+        if name and _is_non_person_name(name):
+            continue
+        if not name:
+            name = email.split("@", 1)[0]
+
+        if email_lower in seen:
+            continue
+        seen.add(email_lower)
+        contacts.append({
+            "name": name,
+            "email": email,
+            "title": "",
+            "phone": "",
+        })
+
+    return contacts
 
 
 # ---------------------------------------------------------------------------

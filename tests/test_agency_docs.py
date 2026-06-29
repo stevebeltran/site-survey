@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from matcher import assign_contact_to_role
-from gmail_lookup import extract_department_contacts, search_department_calendar_events
+from gmail_lookup import extract_department_contacts, search_department_calendar_events, search_jira_for_tickets
 
 
 class TestContactToRoleMatching:
@@ -125,6 +125,7 @@ class TestSearchDepartmentCalendarEvents:
             assert "time" in event
             assert "attendee_count" in event
             assert "url" in event
+            assert "contacts" in event
 
     def test_search_department_calendar_events_date_format(self):
         """Test that returned events have properly formatted dates (Mon DD, YYYY)."""
@@ -259,6 +260,75 @@ class TestSearchDepartmentDocuments:
         assert result == []
 
 
+class TestSearchJiraTickets:
+    """Test suite for Jira ticket lookup behavior."""
+
+    @patch("gmail_lookup.requests.get")
+    def test_search_jira_for_tickets_uses_city_scope_and_dedupes(self, mock_get):
+        """Jira search should use agency + city terms and return unique issues."""
+
+        def make_response(issues):
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {"issues": issues}
+            resp.raise_for_status.return_value = None
+            return resp
+
+        mock_get.side_effect = [
+            make_response([
+                {
+                    "key": "LOGO-214",
+                    "fields": {
+                        "summary": "WEST MEMPHIS PD, AR",
+                        "status": {"name": "REQUEST ACCEPTED"},
+                        "assignee": {"displayName": "eugene.berezhnyi"},
+                    },
+                },
+                {
+                    "key": "DFR-361",
+                    "fields": {
+                        "summary": "WEST MEMPHIS, AR - RF# 1",
+                        "status": {"name": "PLANNING - RF"},
+                        "assignee": {"displayName": "Steven Beltran"},
+                    },
+                },
+            ]),
+            make_response([
+                {
+                    "key": "DFR-361",
+                    "fields": {
+                        "summary": "WEST MEMPHIS, AR - RF# 1",
+                        "status": {"name": "PLANNING - RF"},
+                        "assignee": {"displayName": "Steven Beltran"},
+                    },
+                },
+                {
+                    "key": "DFR-443",
+                    "fields": {
+                        "summary": "WEST MEMPHIS PD, AR Engineering Site Plan Sign-off",
+                        "status": {"name": "SITE PLAN APPROVED"},
+                        "assignee": {"displayName": "Steven Beltran"},
+                    },
+                },
+            ]),
+        ]
+
+        result = search_jira_for_tickets(
+            "WEST MEMPHIS PD, AR",
+            city="WEST MEMPHIS",
+            jira_url="https://brincdrones.atlassian.net",
+            jira_email="user@example.com",
+            jira_token="token",
+        )
+
+        assert result["status"] == "connected"
+        assert result["search_terms"] == ["WEST MEMPHIS PD, AR", "WEST MEMPHIS"]
+        assert [ticket["key"] for ticket in result["tickets"]] == ["LOGO-214", "DFR-361", "DFR-443"]
+        assert mock_get.call_count == 2
+        assert mock_get.call_args_list[0].kwargs["params"]["jql"] == 'text ~ "WEST MEMPHIS PD, AR" ORDER BY updated DESC'
+        assert mock_get.call_args_list[1].kwargs["params"]["jql"] == 'text ~ "WEST MEMPHIS" ORDER BY updated DESC'
+
+
 class TestParallelOrchestrator:
     """Test suite for fetch_agency_docs_parallel function."""
 
@@ -355,6 +425,51 @@ class TestParallelOrchestrator:
                 "RTCC/RTIC", "Crane Contractor", "Tower Climber Contractor",
                 "BRINC Project Manager", "Other"
             ]
+
+    @patch('agency_docs.extract_department_contacts')
+    @patch('agency_docs.search_department_calendar_events')
+    @patch('agency_docs.GoogleDriveManager')
+    @patch('agency_docs.google_oauth.get_credentials')
+    def test_fetch_agency_docs_parallel_merges_calendar_invite_contacts(
+        self,
+        mock_get_creds,
+        mock_drive_manager,
+        mock_calendar,
+        mock_gmail,
+    ):
+        from agency_docs import fetch_agency_docs_parallel
+
+        mock_get_creds.return_value = MagicMock()
+        mock_gmail.return_value = []
+        mock_calendar.return_value = [
+            {
+                "name": "Kickoff",
+                "date": "Jun 24, 2026",
+                "time": "2:00 PM",
+                "attendee_count": 2,
+                "url": "...",
+                "contacts": [
+                    {"name": "Casey Admin", "email": "casey@memphispd.gov", "title": "", "phone": ""},
+                    {"name": "Casey Admin", "email": "casey@memphispd.gov", "title": "", "phone": ""},
+                ],
+            }
+        ]
+
+        mock_manager_instance = MagicMock()
+        mock_manager_instance.search_department_documents.return_value = []
+        mock_drive_manager.return_value = mock_manager_instance
+
+        result = fetch_agency_docs_parallel("West Memphis Police", "memphispd.gov", {})
+
+        assert result["contacts"] == [
+            {
+                "name": "Casey Admin",
+                "email": "casey@memphispd.gov",
+                "title": "",
+                "phone": "",
+                "poc_role": "Other",
+            }
+        ]
 
     @patch('agency_docs.extract_department_contacts')
     @patch('agency_docs.search_department_calendar_events')
