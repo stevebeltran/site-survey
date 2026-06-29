@@ -361,8 +361,6 @@ if "jira_results" not in st.session_state:
     st.session_state.jira_results = {}
 if "hubspot_results" not in st.session_state:
     st.session_state.hubspot_results = {}
-if "agency_contacts" not in st.session_state:
-    st.session_state.agency_contacts = []
 if "agency_docs" not in st.session_state:
     st.session_state.agency_docs = []
 if "agency_calendar" not in st.session_state:
@@ -502,8 +500,6 @@ def _save_session_metadata(site_data):
     for site in site_data:
         # Save customer info into the site payload for history loading
         site["customer_info"] = st.session_state.customer_info
-        # Preserve the derived connected contacts list so it survives reloads.
-        site["agency_contacts"] = st.session_state.get("agency_contacts", [])
         folder_path = site.get("folder_path")
         if folder_path and os.path.exists(folder_path):
             metadata_path = os.path.join(folder_path, "session_metadata.json")
@@ -1330,10 +1326,6 @@ with st.sidebar:
                                     st.session_state.active_bg_image = loaded_site["images"][0]["filename"]
                                 if "customer_info" in loaded_site:
                                     st.session_state.customer_info = loaded_site["customer_info"]
-                                loaded_contacts = loaded_site.get("agency_contacts", [])
-                                if not loaded_contacts:
-                                    loaded_contacts = st.session_state.customer_info.get("contacts", [])
-                                st.session_state.agency_contacts = loaded_contacts
                                 st.success(f"Loaded session for {display_name}")
                                 st.rerun()
                             except Exception as e:
@@ -1754,23 +1746,6 @@ with st.container(border=True):
                 st.session_state["_widget_agency_address"] = st.session_state.customer_info.get("agency_address", "")
             st.session_state.customer_info["agency_name"] = st.text_input("Agency Name", key="_widget_agency_name")
             st.session_state.customer_info["agency_address"] = st.text_input("Agency Address", key="_widget_agency_address")
-        with col_a2:
-            st.markdown("**Connected Docs**")
-            if google_oauth.is_authenticated():
-                agency = st.session_state.customer_info.get("agency_name", "")
-                if st.button("🔄 Refresh Connected Docs", width="stretch"):
-                    if not agency:
-                        st.warning("Enter or detect an Agency Name first.")
-                    else:
-                        city_hint = ""
-                        agency_address = st.session_state.customer_info.get("agency_address", "")
-                        if agency_address:
-                            city_hint = processor.extract_city_from_address(agency_address) or ""
-                        with st.spinner("Refreshing connected docs..."):
-                            _run_connected_docs_search(agency, city_hint)
-                        st.rerun()
-            else:
-                google_oauth.render_connect_button("Connect Google for Gmail & Drive Lookup")
 
         summary_cols = st.columns(3)
         with summary_cols[0]:
@@ -1781,26 +1756,13 @@ with st.container(border=True):
             st.metric("Contacts", len(st.session_state.customer_info.get("contacts", [])))
 
     with agency_tabs[1]:
-        st.markdown("**Connected POCs**")
-        agency_contacts = st.session_state.get("agency_contacts", [])
-        if agency_contacts:
-            render_poc_table(agency_contacts)
-            st.markdown("**Connected Contact Feed**")
-            connected_contacts_df = pd.DataFrame(agency_contacts)
-            if not connected_contacts_df.empty:
-                st.dataframe(connected_contacts_df, width="stretch", hide_index=True)
-        elif st.session_state.get("agency_docs_loading"):
-            st.info("Connected docs lookup in progress.")
-        else:
-            st.info("No connected contacts found yet.")
-
         st.markdown("**Manual Contacts**")
         contacts_df = pd.DataFrame(st.session_state.customer_info.get("contacts", []))
         if not contacts_df.empty:
             st.dataframe(contacts_df, width="stretch", hide_index=True)
         else:
-            st.info("No manual contacts loaded yet. Use the Survey Pipeline tab or Gmail lookup to populate contacts.")
-        st.caption("Contact editing remains available in the Survey Pipeline for compatibility.")
+            st.info("No manual contacts loaded yet. Use the Survey Pipeline tab to populate contacts.")
+        st.caption("Contact editing available in the Survey Pipeline tab.")
 
     with agency_tabs[2]:
         dep_cols = st.columns(3)
@@ -2720,11 +2682,6 @@ with tab1:
                     _render_site_checklist(csite, i)
             # Report generation and Drive upload are separate actions.
             st.subheader("Report Generation & Upload")
-            with st.expander("Report Contact Preview", expanded=False):
-                preview_rows = _report_contact_preview_rows()
-                preview_df = pd.DataFrame(preview_rows, columns=["Field", "Value"])
-                st.dataframe(preview_df, width="stretch", hide_index=True)
-                st.caption("This preview mirrors the report import fields before export.")
             report_name = st.text_input("Master Document Name", value=_default_master_document_name())
             use_new_report = st.checkbox(
                 "Use enhanced multi-site report format",

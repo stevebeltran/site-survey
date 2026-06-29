@@ -298,6 +298,7 @@ def enrich_gis(site, skip_nominatim=False, progress_callback=None):
                 result = estimate_building_height_gemini(photo_path)
                 if result and result.get("estimated_height_ft"):
                     site.structure.building_height = float(result["estimated_height_ft"])
+                    site.structure.building_height_source = "Gemini Vision"
                     site.checklist_provenance["BUILDING_HEIGHT"] = "auto"
 
     # ── Overpass: building height from OSM (fallback) ──
@@ -323,18 +324,38 @@ def enrich_gis(site, skip_nominatim=False, progress_callback=None):
                     if height_str:
                         try:
                             site.structure.building_height = float(height_str.replace("m", "").strip()) * 3.281
+                            site.structure.building_height_source = "OpenStreetMap height data"
                             site.checklist_provenance["BUILDING_HEIGHT"] = "auto"
                         except ValueError:
                             pass
                     elif levels_str:
                         try:
                             site.structure.building_height = float(levels_str) * 13.0
+                            site.structure.building_height_source = "OpenStreetMap level count"
                             site.checklist_provenance["BUILDING_HEIGHT"] = "auto"
                         except ValueError:
                             pass
         except Exception as e:
             logger.warning("Overpass building-height lookup failed for (%s, %s): %s", lat, lon, e)
             site.checklist_provenance["BUILDING_HEIGHT"] = site.checklist_provenance.get("BUILDING_HEIGHT") or "failed"
+
+    # ── Elevation delta: Calculate from roof elevation if photo EXIF available ──
+    # Store roof elevation from any photo EXIF (before elevation delta calculation)
+    if not hasattr(site, '_roof_elevation'):
+        site._roof_elevation = None
+        for photo in site.photos:
+            if hasattr(photo, 'exif_data') and photo.exif_data and photo.exif_data.get('altitude'):
+                site._roof_elevation = photo.exif_data.get('altitude')
+                site.structure.roof_elevation = site._roof_elevation
+                break
+
+    # Calculate height from elevation delta if other methods failed
+    if site.structure.building_height is None and site.structure.roof_elevation and site.identity.site_elevation:
+        height_delta = site.structure.roof_elevation - site.identity.site_elevation
+        if height_delta > 0:
+            site.structure.building_height = height_delta
+            site.structure.building_height_source = f"Elevation delta (roof {site.structure.roof_elevation:.0f}ft - ground {site.identity.site_elevation:.0f}ft)"
+            site.checklist_provenance["BUILDING_HEIGHT"] = "auto"
 
     # ── Overpass: airport and heliport distances ──
     _progress("Searching for nearby airports & heliports...")

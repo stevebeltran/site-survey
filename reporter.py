@@ -1544,10 +1544,6 @@ def _add_poc_table(doc, customer_info):
     h_run.font.color.rgb = RGBColor(0, 0, 0)
 
     rows = [
-        ("Agency Name\nAgency Address", _format_contact_block(
-            _get_contact_value(customer_info, "agency_name", ""),
-            _get_contact_value(customer_info, "agency_address", ""),
-        )),
         ("Point of Contact\n(Name, E-Mail, Phone #)", _format_contact_block(
             _get_contact_value(customer_info, "poc_name", ""),
             _get_contact_value(customer_info, "poc_email", ""),
@@ -1701,8 +1697,10 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
 
         # Site Details
         building_height = site.get('building_height')
+        building_height_source = site.get('building_height_source', 'Unknown')
         if building_height:
             height_str = f"{building_height:.0f} ft" if isinstance(building_height, (int, float)) else str(building_height)
+            height_str = f"{height_str} ({building_height_source})"
         else:
             height_str = "Assessment required"
 
@@ -1842,6 +1840,12 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
             customer_info["report_date"] = _format_report_date(survey_date)
         surveyor = customer_info.get("surveyor", surveyor)
 
+    # Display metadata at top
+    doc.add_paragraph(f"Agency: {agency}")
+    doc.add_paragraph(f"Survey Date: {_format_report_date(survey_date)}")
+    doc.add_paragraph(f"Surveyor: {surveyor}")
+    doc.add_paragraph(f"Candidate Sites Found: {len(candidate_sites)}")
+
     _progress("Generating site map visualization...")
     doc.add_paragraph().add_run("Site Detail & Map Visualisation").bold = True
     map_image_path = os.path.join(os.path.dirname(output_filepath), "dfr_site_map.png")
@@ -1849,11 +1853,6 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
     if os.path.exists(map_image_path):
         doc.add_picture(map_image_path, width=Inches(6.0))
         doc.add_paragraph()
-
-    doc.add_paragraph(f"Agency: {agency}")
-    doc.add_paragraph(f"Survey Date: {_format_report_date(survey_date)}")
-    doc.add_paragraph(f"Surveyor: {surveyor}")
-    doc.add_paragraph(f"Candidate Sites Found: {len(candidate_sites)}")
 
     _add_poc_table(doc, customer_info)
     doc.add_page_break()
@@ -1865,13 +1864,17 @@ def generate_candidate_site_report(candidate_sites, output_filepath,
 
         # 2a. Site Overview
         doc.add_heading("Site Overview", level=2)
+        height_display = "—"
+        if site.structure.building_height:
+            source = site.structure.building_height_source or "Unknown"
+            height_display = f"{site.structure.building_height} ft ({source})"
         overview_data = [
             ["Site ID", site.identity.site_id],
             ["Address", site.identity.site_address],
             ["Latitude", str(site.identity.site_latitude)],
             ["Longitude", str(site.identity.site_longitude)],
             ["Elevation", f"{site.identity.site_elevation} ft" if site.identity.site_elevation else "—"],
-            ["Building Height", f"{site.structure.building_height} ft" if site.structure.building_height else "—"],
+            ["Building Height", height_display],
             ["Roof Type", site.structure.roof_type or "—"],
         ]
         add_styled_table(doc, overview_data, ["Field", "Value"])

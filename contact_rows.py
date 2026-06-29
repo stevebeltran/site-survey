@@ -1,22 +1,19 @@
-"""Helpers for initializing and syncing manual contact rows."""
+"""Deprecated: helpers for initializing and syncing manual contact rows.
 
-ROLE_FIELD_MAP = {
-    "POC": ("poc_name", "poc_email", "poc_phone"),
-    "IT": ("it_director", "it_email", "it_phone"),
-    "Facilities": ("facilities_engineer", "facilities_email", "facilities_phone"),
-    "RTCC": ("rtcc_name", "rtcc_email", "rtcc_phone"),
-    "Radio Shop": ("radio_shop_name", "radio_shop_email", "radio_shop_phone"),
-}
+DEPRECATED: Use contact_model module instead. This stub is maintained for backward compatibility.
+"""
+
+# Import from new unified contact model
+from contact_model import STANDARD_ROLES, normalize_contact
+
+# Backward compatibility: expose as ROLE_FIELD_MAP
+ROLE_FIELD_MAP = STANDARD_ROLES
 
 
+# Deprecated: use normalize_contact() instead
 def _normalize_row(role="", name="", email="", phone="", title=""):
-    return {
-        "role": role or "Other",
-        "name": name or "",
-        "title": title or "",
-        "email": email or "",
-        "phone": phone or "",
-    }
+    """DEPRECATED: use contact_model.normalize_contact() instead."""
+    return normalize_contact(role, name, email, phone, title)
 
 
 def build_initial_poc_rows(customer_info, next_uid):
