@@ -1433,13 +1433,18 @@ def _render_survey_upload_block(current_proximity_radius: int, compact: bool = F
                     )
                     gmail_result = _lookup_contacts_from_gmail(agency_name, city_hint or None)
                     if gmail_result and gmail_result.get("status") == "connected":
-                        found_contacts = gmail_result.get("all_contacts", [])
-                        if found_contacts:
-                            st.session_state["gmail_found_contacts"] = found_contacts
-                            st.session_state.agency_contacts = found_contacts
-                        for key in ("poc_name", "poc_email", "poc_phone", "it_director", "it_email"):
-                            if gmail_result.get(key):
-                                st.session_state.customer_info[key] = gmail_result[key]
+                        discovered_contacts = gmail_result.get("contacts", [])
+                        if discovered_contacts:
+                            # Merge into unified contacts array with dedup
+                            existing = st.session_state.customer_info.get("contacts", [])
+                            existing_emails = {c.get("email", "").lower() for c in existing if c.get("email")}
+                            for contact in discovered_contacts:
+                                email = contact.get("email", "").lower()
+                                if email and email in existing_emails:
+                                    continue
+                                existing.append(contact)
+                            st.session_state.customer_info["contacts"] = existing
+                            st.session_state["gmail_found_contacts"] = discovered_contacts
 
                     # Call parallel fetch in blocking context (will complete before rerun)
                     _set_sidebar_activity(
