@@ -7,6 +7,7 @@ import logging
 import math
 import tempfile
 import zipfile
+import time
 from xml.sax.saxutils import escape as xml_escape
 import requests
 from docx import Document
@@ -19,6 +20,30 @@ from geopy.distance import geodesic
 from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
+
+
+class _AirspaceCache:
+    """Cache airspace lookups with TTL and connection pooling."""
+    def __init__(self, ttl_seconds=3600):
+        self.cache = {}
+        self.ttl = ttl_seconds
+        self.session = requests.Session()
+
+    def get(self, lat, lon):
+        key = (round(lat, 4), round(lon, 4))
+        if key in self.cache:
+            value, timestamp = self.cache[key]
+            if time.time() - timestamp < self.ttl:
+                return value
+            del self.cache[key]
+        return None
+
+    def set(self, lat, lon, value):
+        key = (round(lat, 4), round(lon, 4))
+        self.cache[key] = (value, time.time())
+
+
+_airspace_cache = _AirspaceCache()
 
 
 def _load_font(bold=False, size=28):
@@ -421,7 +446,12 @@ def query_nearest_airfield(lat, lon):
 def query_airspace_class(lat, lon):
     """
     Lookup Airspace Class (B, C, D, E, G) for coordinate.
+    Uses caching, connection pooling, and retry logic for robustness.
     """
+    cached = _airspace_cache.get(lat, lon)
+    if cached is not None:
+        return cached
+
     faa_url = "https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/services/Class_Airspace/FeatureServer/0/query"
     params = {
         "geometry": json.dumps({
@@ -436,26 +466,47 @@ def query_airspace_class(lat, lon):
         "f": "json",
         "returnGeometry": "false"
     }
-    try:
-        response = requests.get(faa_url, params=params, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            features = data.get("features", [])
-            classes = []
-            for feature in features:
-                airspace_class = feature.get("attributes", {}).get("CLASS")
-                if airspace_class and airspace_class not in classes:
-                    classes.append(airspace_class)
 
-            if classes:
-                class_order = {"A": 0, "B": 1, "C": 2, "D": 3, "E": 4, "G": 5}
-                classes.sort(key=lambda c: class_order.get(c, 99))
-                if len(classes) == 1:
-                    return f"Controlled (Class {classes[0]})"
-                return f"Controlled (Classes {', '.join(classes)})"
-            return "Uncontrolled (Class G)"
-    except Exception as e:
-        logger.warning("FAA airspace lookup failed: %s", e)
+    for attempt in range(3):
+        try:
+            response = _airspace_cache.session.get(faa_url, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                features = data.get("features", [])
+                classes = []
+                for feature in features:
+                    airspace_class = feature.get("attributes", {}).get("CLASS")
+                    if airspace_class and airspace_class not in classes:
+                        classes.append(airspace_class)
+
+                if classes:
+                    class_order = {"A": 0, "B": 1, "C": 2, "D": 3, "E": 4, "G": 5}
+                    classes.sort(key=lambda c: class_order.get(c, 99))
+                    if len(classes) == 1:
+                        result = f"Controlled (Class {classes[0]})"
+                    else:
+                        result = f"Controlled (Classes {', '.join(classes)})"
+                else:
+                    result = "Uncontrolled (Class G)"
+
+                _airspace_cache.set(lat, lon, result)
+                return result
+
+            elif response.status_code >= 500 and attempt < 2:
+                wait = 2 ** attempt
+                logger.debug("FAA server error, retry in %ds", wait)
+                time.sleep(wait)
+                continue
+
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            if attempt < 2:
+                wait = 2 ** attempt
+                logger.debug("FAA lookup timeout/connection error, retry in %ds", wait)
+                time.sleep(wait)
+                continue
+            logger.warning("FAA airspace lookup failed after retries: %s", e)
+        except Exception as e:
+            logger.warning("FAA airspace lookup failed: %s", e)
 
     return None
 
