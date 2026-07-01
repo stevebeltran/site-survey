@@ -308,6 +308,7 @@ if "customer_info" not in st.session_state:
     st.session_state.customer_info = {
         "agency_name": "",
         "agency_address": "",
+        "agency_jurisdiction": "city",
         "poc_name": "",
         "poc_email": "",
         "poc_phone": "",
@@ -339,6 +340,7 @@ if "customer_info" not in st.session_state:
 else:
     # On reload/startup, migrate any old flat contact fields to unified array
     st.session_state.customer_info = migrate_flat_to_array(st.session_state.customer_info)
+    st.session_state.customer_info.setdefault("agency_jurisdiction", "city")
 
 if "active_bg_image" not in st.session_state:
     st.session_state.active_bg_image = None
@@ -358,6 +360,12 @@ if "image_paths" not in st.session_state:
     st.session_state.image_paths = []
 if "drive_folder_url" not in st.session_state:
     st.session_state.drive_folder_url = None
+if "raw_images_folder_url" not in st.session_state:
+    st.session_state.raw_images_folder_url = None
+if "processed_folder_url" not in st.session_state:
+    st.session_state.processed_folder_url = None
+if "client_folder_url" not in st.session_state:
+    st.session_state.client_folder_url = None
 if "candidate_sites" not in st.session_state:
     st.session_state.candidate_sites = []
 if "_last_doc_search_agency" not in st.session_state:
@@ -415,7 +423,10 @@ def _safe_filename_part(text):
 
 def _default_master_document_name():
     """Build the default report filename from the agency name and survey date."""
-    agency = st.session_state.customer_info.get("agency_name", "").strip()
+    agency = (
+        st.session_state.customer_info.get("jurisdiction_name", "")
+        or st.session_state.customer_info.get("agency_name", "")
+    ).strip()
     survey_date = ""
     if st.session_state.candidate_sites:
         survey_date = st.session_state.candidate_sites[0].identity.survey_date or ""
@@ -659,7 +670,7 @@ def _list_available_images(images_dir):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def _detect_agency_from_gps(first_file_bytes, first_file_name):
+def _detect_agency_from_gps(first_file_bytes, first_file_name, jurisdiction_mode="city"):
     """Extract GPS from the first uploaded image, reverse geocode, and derive agency info."""
     try:
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(first_file_name)[1])
@@ -670,15 +681,18 @@ def _detect_agency_from_gps(first_file_bytes, first_file_name):
         if lat is None or lon is None:
             return None
         full_address = processor.reverse_geocode(lat, lon)
-        # Use extract_city_from_address to validate Nominatim city against amenity/street keywords
+        jurisdiction_mode = processor._normalize_agency_jurisdiction(jurisdiction_mode)
         city = processor.extract_city_from_address(full_address)
+        jurisdiction_name = processor.build_agency_location_hint(full_address, jurisdiction_mode)
         state = getattr(full_address, 'state', None)
-        agency_name = f"{city} Police Department" if city else None
+        agency_name = processor.build_agency_name_from_address(full_address, jurisdiction_mode)
         return {
             "lat": lat,
             "lon": lon,
             "address": full_address,
             "city": city,
+            "jurisdiction_name": jurisdiction_name,
+            "jurisdiction_mode": jurisdiction_mode,
             "state": state,
             "agency_name": agency_name,
         }
@@ -691,6 +705,13 @@ def _detect_agency_from_gps(first_file_bytes, first_file_name):
 def _lookup_contacts_from_gmail(agency_name, city=None):
     """Search Gmail and Calendar for kickoff calls / invites with this agency."""
     return search_gmail_for_contacts(agency_name, city)
+
+
+def _agency_location_hint(address, jurisdiction_mode="city"):
+    """Return the best label for map and search hints."""
+    if not address:
+        return ""
+    return processor.build_agency_location_hint(address, jurisdiction_mode) or ""
 
 
 def _render_jira_ticket_results(jira_results):
@@ -708,7 +729,7 @@ def _render_jira_ticket_results(jira_results):
         st.dataframe(df[display_cols], width="stretch", hide_index=True)
 
 
-def _run_connected_docs_search(agency, city=""):
+def _run_connected_docs_search(agency, location_hint=""):
     """Run Gmail + Drive + Jira + HubSpot search and store results in session state.
 
     Returns True if any search produced results.
@@ -723,7 +744,7 @@ def _run_connected_docs_search(agency, city=""):
 
     # Gmail contacts
     _set_sidebar_activity("Looking up connected docs", f"Searching Gmail contacts for {agency}.")
-    contacts = _lookup_contacts_from_gmail(agency, city)
+    contacts = _lookup_contacts_from_gmail(agency, location_hint)
     contact_status = contacts.get("status", "no_results") if contacts else "no_results"
     if contact_status == "connected":
         discovered_contacts = contacts.get("contacts", [])
@@ -749,7 +770,7 @@ def _run_connected_docs_search(agency, city=""):
 
     # Drive: Gemini notes & folders
     _set_sidebar_activity("Looking up connected docs", f"Searching Google Drive for {agency}.")
-    drive_results = search_drive_for_gemini_notes(agency, city)
+    drive_results = search_drive_for_gemini_notes(agency, location_hint)
     drive_status = drive_results.get("status", "no_results")
     if drive_status == "connected":
         st.session_state["drive_gemini_results"] = drive_results
@@ -770,7 +791,7 @@ def _run_connected_docs_search(agency, city=""):
     _set_sidebar_activity("Looking up connected docs", f"Searching Jira for {agency}.")
     jira_results = search_jira_for_tickets(
         agency,
-        city=city or None,
+        city=location_hint or None,
         jira_url=st.session_state.get("_jira_url", ""),
         jira_email=st.session_state.get("_jira_email", ""),
         jira_token=st.session_state.get("_jira_token", ""),
@@ -804,7 +825,7 @@ def _run_connected_docs_search(agency, city=""):
 
     # Calendar events
     _set_sidebar_activity("Looking up connected docs", f"Searching Calendar events for {agency}.")
-    calendar_results = search_calendar_for_events(agency, city)
+    calendar_results = search_calendar_for_events(agency, location_hint)
     st.session_state["calendar_results"] = calendar_results
     if calendar_results["status"] == "connected":
         _append_integration_log(
@@ -823,7 +844,7 @@ def _run_connected_docs_search(agency, city=""):
         agency,
         "",
         st.session_state,
-        city_hint=city or None,
+        city_hint=location_hint or None,
     )
     parallel_contacts = parallel_result.get("contacts", [])
     if parallel_contacts:
@@ -1103,14 +1124,16 @@ def _render_primary_map_section():
 
             m = folium.Map(location=[center_lat, center_lon], zoom_start=13, tiles="CartoDB positron")
 
-            if "city_boundary_geojson" not in st.session_state:
-                detected = st.session_state.get("gps_detected_agency", {})
-                city = detected.get("city", "")
-                state = detected.get("state", "")
-                geojson = reporter.query_city_boundary(city, state) if city else None
+            detected = st.session_state.get("gps_detected_agency", {})
+            jurisdiction_name = detected.get("jurisdiction_name", "") or detected.get("city", "")
+            state = detected.get("state", "")
+            boundary_key = (jurisdiction_name or "", state or "")
+            if st.session_state.get("city_boundary_geojson_key") != boundary_key:
+                geojson = reporter.query_city_boundary(jurisdiction_name, state) if jurisdiction_name else None
                 st.session_state.city_boundary_geojson = geojson
+                st.session_state.city_boundary_geojson_key = boundary_key
 
-            boundary = st.session_state.city_boundary_geojson
+            boundary = st.session_state.get("city_boundary_geojson")
             if boundary:
                 folium.GeoJson(
                     boundary,
@@ -1362,6 +1385,7 @@ def _on_files_changed():
     st.session_state.pop("_upload_processing_state", None)
     st.session_state.pop("_upload_processing_summary", None)
     st.session_state.pop("city_boundary_geojson", None)
+    st.session_state.pop("city_boundary_geojson_key", None)
     st.session_state.pop("candidate_sites", None)
 
 def _render_survey_upload_block(current_proximity_radius: int, compact: bool = False, upload_complete: bool = False):
@@ -1382,6 +1406,34 @@ def _render_survey_upload_block(current_proximity_radius: int, compact: bool = F
             value=current_proximity_radius,
             help="Controls how tightly photos must cluster before they are treated as the same site.",
         )
+        agency_jurisdiction = st.selectbox(
+            "Agency Naming Style",
+            options=["city", "county", "parish"],
+            format_func=lambda value: {
+                "city": "City Police Department",
+                "county": "County Sheriff's Office",
+                "parish": "Parish Sheriff's Office",
+            }[value],
+            index=["city", "county", "parish"].index(st.session_state.customer_info.get("agency_jurisdiction", "city"))
+            if st.session_state.customer_info.get("agency_jurisdiction", "city") in {"city", "county", "parish"}
+            else 0,
+            help="Controls how the auto-detected agency name is labeled from GPS.",
+            key="_widget_agency_jurisdiction",
+        )
+        st.session_state.customer_info["agency_jurisdiction"] = agency_jurisdiction
+        if st.session_state.get("gps_detected_agency", {}).get("address"):
+            detected_address = st.session_state.gps_detected_agency.get("address", "")
+            updated_agency_name = processor.build_agency_name_from_address(detected_address, agency_jurisdiction)
+            updated_jurisdiction_name = processor.build_agency_location_hint(detected_address, agency_jurisdiction)
+            if updated_agency_name:
+                st.session_state.gps_detected_agency = {
+                    **st.session_state.gps_detected_agency,
+                    "agency_name": updated_agency_name,
+                    "jurisdiction_name": updated_jurisdiction_name,
+                    "jurisdiction_mode": agency_jurisdiction,
+                }
+                st.session_state.customer_info["agency_name"] = updated_agency_name
+                st.session_state.customer_info["jurisdiction_name"] = updated_jurisdiction_name
         uploaded_files = st.file_uploader(
             "Upload raw survey photos (.jpg, .jpeg, .png)",
             accept_multiple_files=True,
@@ -1396,7 +1448,11 @@ def _render_survey_upload_block(current_proximity_radius: int, compact: bool = F
             if "gps_detected_agency" not in st.session_state:
                 with st.spinner("Detecting location from photo GPS data..."):
                     for uf in uploaded_files:
-                        detection = _detect_agency_from_gps(uf.getvalue(), uf.name)
+                        detection = _detect_agency_from_gps(
+                            uf.getvalue(),
+                            uf.name,
+                            st.session_state.customer_info.get("agency_jurisdiction", "city"),
+                        )
                         if detection and detection.get("agency_name"):
                             st.session_state.gps_detected_agency = detection
                             agency = detection["agency_name"]
@@ -1422,7 +1478,10 @@ def _render_survey_upload_block(current_proximity_radius: int, compact: bool = F
                     )
                     # Extract domain from agency address or leave empty
                     agency_address = st.session_state.customer_info.get("agency_address", "")
-                    city_hint = processor.extract_city_from_address(agency_address) if agency_address else ""
+                    city_hint = _agency_location_hint(
+                        agency_address,
+                        st.session_state.customer_info.get("agency_jurisdiction", "city"),
+                    )
                     dept_domain = ""  # Domain is not reliably derivable from the address alone
 
                     # Run Gmail lookup first so contacts are available even if the
@@ -1581,6 +1640,7 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                     drive_manager=proc_drive,
                     drive_output_folder_id=st.session_state.get('processed_folder_id'),
                     agency_name=st.session_state.customer_info.get("agency_name"),
+                    agency_jurisdiction_mode=st.session_state.customer_info.get("agency_jurisdiction", "city"),
                 )
 
                 if not site_data:
@@ -1621,11 +1681,13 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                 if site_data:
                     first_site = site_data[0]
                     first_address = first_site.get("address", "")
-                    agency_name = first_site.get("agency_name") or f"{_extract_town_state_from_address(first_address)[0]} Police Department"
+                    agency_mode = st.session_state.customer_info.get("agency_jurisdiction", "city")
+                    agency_name = first_site.get("agency_name") or processor.build_agency_name_from_address(first_address, agency_mode)
 
                     existing = st.session_state.customer_info
                     st.session_state.customer_info = {
                         "agency_name": agency_name,
+                        "jurisdiction_name": processor.build_agency_location_hint(first_address, agency_mode) if first_address else agency_name,
                         "agency_address": reporter._format_short_address(first_address),
                         "poc_name": existing.get("poc_name", ""),
                         "poc_email": existing.get("poc_email", ""),
@@ -1656,10 +1718,13 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                         "agency_address": st.session_state.customer_info["agency_address"],
                     }
                     city = processor.extract_city_from_address(first_address) if first_address else ""
+                    jurisdiction_name = processor.build_agency_location_hint(first_address, agency_mode) if first_address else ""
                     st.session_state.gps_detected_agency = {
                         **st.session_state.get("gps_detected_agency", {}),
                         "agency_name": agency_name,
                         "city": city,
+                        "jurisdiction_name": jurisdiction_name,
+                        "jurisdiction_mode": agency_mode,
                     }
                     _save_session_metadata(site_data)
 
@@ -1811,7 +1876,7 @@ with st.container(border=True):
                     })
 
                 contacts_df = pd.DataFrame(display_contacts)
-                st.dataframe(contacts_df, width="stretch", hide_index=True, use_container_width=True)
+                st.dataframe(contacts_df, width="stretch", hide_index=True)
 
                 st.caption(f"Showing {len(filtered_contacts)} contact(s)")
             else:
@@ -1981,6 +2046,7 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                     drive_manager=proc_drive,
                     drive_output_folder_id=st.session_state.get('processed_folder_id'),
                     agency_name=st.session_state.customer_info.get("agency_name"),
+                    agency_jurisdiction_mode=st.session_state.customer_info.get("agency_jurisdiction", "city"),
                 )
 
                 if not site_data:
@@ -2009,11 +2075,13 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                 if site_data:
                     first_site = site_data[0]
                     first_address = first_site.get("address", "")
-                    agency_name = first_site.get("agency_name") or f"{_extract_town_state_from_address(first_address)[0]} Police Department"
+                    agency_mode = st.session_state.customer_info.get("agency_jurisdiction", "city")
+                    agency_name = first_site.get("agency_name") or processor.build_agency_name_from_address(first_address, agency_mode)
 
                     existing = st.session_state.customer_info
                     st.session_state.customer_info = {
                         "agency_name": agency_name,
+                        "jurisdiction_name": processor.build_agency_location_hint(first_address, agency_mode) if first_address else agency_name,
                         "agency_address": reporter._format_short_address(first_address),
                         "poc_name": existing.get("poc_name", ""),
                         "poc_email": existing.get("poc_email", ""),
@@ -2046,10 +2114,13 @@ if uploaded_files and not st.session_state.get("_auto_processed"):
                     }
                     # Update gps_detected_agency to match the final resolved name
                     city = processor.extract_city_from_address(first_address) if first_address else ""
+                    jurisdiction_name = processor.build_agency_location_hint(first_address, agency_mode) if first_address else ""
                     st.session_state.gps_detected_agency = {
                         **st.session_state.get("gps_detected_agency", {}),
                         "agency_name": agency_name,
                         "city": city,
+                        "jurisdiction_name": jurisdiction_name,
+                        "jurisdiction_mode": agency_mode,
                     }
                     _save_session_metadata(site_data)
 
@@ -2683,7 +2754,12 @@ with tab1:
             # Clickable link to the Google Drive working directory
             if st.session_state.get("drive_folder_url"):
                 st.divider()
-                st.markdown(f"[📂 Open in Google Drive]({st.session_state.drive_folder_url})")
+                st.markdown(f"**Drive Folder ID:** `{st.session_state.get('client_folder_id', '')}`")
+                st.markdown(f"[Open Client Folder]({st.session_state.drive_folder_url})")
+                if st.session_state.get("raw_images_folder_url"):
+                    st.markdown(f"[Raw Images Folder]({st.session_state.raw_images_folder_url})")
+                if st.session_state.get("processed_folder_url"):
+                    st.markdown(f"[Processed Sites Folder]({st.session_state.processed_folder_url})")
 
     with col2:
         st.subheader("Site Detail & Analysis")
@@ -2697,27 +2773,12 @@ with tab1:
             selected_site_idx = st.selectbox("Select Site to Inspect", range(len(st.session_state.processed_sites)), format_func=_site_label)
             selected_site = st.session_state.processed_sites[selected_site_idx]
 
-            # Auto-populate agency name from batch folder name
-            if selected_site.get('batch_folder_path'):
-                batch_folder_name = os.path.basename(selected_site['batch_folder_path'])
-                # Remove timestamp suffix (last 15 chars: YYYYMMDD_HHMMSS)
-                if len(batch_folder_name) > 15:
-                    # Check if last 15 chars match timestamp pattern (8 digits, underscore, 6 digits)
-                    potential_timestamp = batch_folder_name[-15:]
-                    if potential_timestamp[8] == '_' and potential_timestamp[:8].isdigit() and potential_timestamp[9:].isdigit():
-                        agency_name = batch_folder_name[:-15].replace('_', ' ')
-                    else:
-                        agency_name = batch_folder_name.replace('_', ' ')
-                else:
-                    agency_name = batch_folder_name.replace('_', ' ')
-
-                # Remove leading numeric prefixes (e.g., "1075 Police" -> "Police")
-                parts = agency_name.split()
-                while parts and parts[0].isdigit():
-                    parts.pop(0)
-                agency_name = ' '.join(parts)
-
+            # Auto-populate agency name from the selected site's address using the active naming style.
+            agency_mode = st.session_state.customer_info.get("agency_jurisdiction", "city")
+            agency_name = processor.build_agency_name_from_address(selected_site.get("address", ""), agency_mode)
+            if agency_name:
                 st.session_state.customer_info["agency_name"] = agency_name
+                st.session_state.customer_info["jurisdiction_name"] = processor.build_agency_location_hint(selected_site.get("address", ""), agency_mode)
 
             st.markdown(f"### {reporter._format_short_address(selected_site['address'])}")
             st.write(f"📁 **Local Folder:** `{os.path.basename(selected_site['folder_path'])}`")
@@ -2770,7 +2831,10 @@ with tab1:
                         _save_session_metadata(st.session_state.processed_sites)
 
                         # Create subfolder with PD name and creation date
-                        pd_name = st.session_state.customer_info.get("agency_name", "Report").replace(" ", "_")
+                        pd_name = (
+                            st.session_state.customer_info.get("jurisdiction_name", "")
+                            or st.session_state.customer_info.get("agency_name", "Report")
+                        ).replace(" ", "_")
                         creation_date = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                         report_subfolder = os.path.join(output_dir, f"{pd_name}_{creation_date}")
                         os.makedirs(report_subfolder, exist_ok=True)
@@ -2854,12 +2918,16 @@ with tab1:
                                 proc_fid = report_drive.get_or_create_folder(client_fid, "02_Processed_Sites")
 
                                 raw_image_folder_ids = {}
+                                processed_image_folder_ids = {}
+                                uploaded_photo_links = {}
                                 for site in st.session_state.processed_sites:
                                     site_folder_name = processor._drive_site_folder_name(
                                         site.get("address"),
                                         site.get("site_id"),
                                     )
                                     site_raw_fid = report_drive.get_or_create_folder(raw_fid, site_folder_name)
+                                    site_proc_fid = report_drive.get_or_create_folder(proc_fid, site_folder_name)
+                                    processed_image_folder_ids[site.get("site_id")] = site_proc_fid
                                     for img in site.get("images", []):
                                         filename = img.get("filename")
                                         if filename and filename not in raw_image_folder_ids:
@@ -2877,7 +2945,9 @@ with tab1:
                                     with open(temp_path, "wb") as f:
                                         f.write(uploaded_file.getbuffer())
                                     target_raw_folder = raw_image_folder_ids.get(uploaded_file.name, raw_fid)
-                                    report_drive.upload_file(temp_path, target_raw_folder)
+                                    file_id = report_drive.upload_file(temp_path, target_raw_folder)
+                                    if file_id:
+                                        uploaded_photo_links[uploaded_file.name] = f"https://drive.google.com/file/d/{file_id}/view?usp=drive_link"
 
                                 st.session_state.client_folder_id = client_fid
                                 st.session_state.raw_images_folder_id = raw_fid
@@ -2885,14 +2955,50 @@ with tab1:
                                 st.session_state.reports_folder_id = client_fid
                                 st.session_state.metadata_folder_id = client_fid
                                 st.session_state.client_name = agency
-                                st.session_state.drive_folder_url = f"https://drive.google.com/drive/folders/{client_fid}"
-                                upload_status.write(f"✅ Uploaded {total_upload} images to Drive")
+                                st.session_state.client_folder_url = f"https://drive.google.com/drive/folders/{client_fid}"
+                                st.session_state.raw_images_folder_url = f"https://drive.google.com/drive/folders/{raw_fid}"
+                                st.session_state.processed_folder_url = f"https://drive.google.com/drive/folders/{proc_fid}"
+                                st.session_state.drive_folder_url = st.session_state.client_folder_url
+                                for site in st.session_state.processed_sites:
+                                    site_proc_fid = processed_image_folder_ids.get(site.get("site_id"))
+                                    if not site_proc_fid:
+                                        continue
+                                    site_folder_path = site.get("folder_path", "")
+                                    if not site_folder_path or not os.path.isdir(site_folder_path):
+                                        continue
+                                    for fname in sorted(os.listdir(site_folder_path)):
+                                        if not (fname.startswith("engineering_layout") and fname.endswith(".png")):
+                                            continue
+                                        local_path = os.path.join(site_folder_path, fname)
+                                        if os.path.exists(local_path):
+                                            report_drive.upload_file(local_path, site_proc_fid, file_name=fname)
+                                if uploaded_photo_links:
+                                    try:
+                                        reporter.append_drive_photo_links(
+                                            report_path,
+                                            uploaded_photo_links,
+                                            st.session_state.candidate_sites if st.session_state.candidate_sites else st.session_state.processed_sites,
+                                        )
+                                    except Exception as link_error:
+                                        _set_sidebar_activity(
+                                            "Drive photo links not added",
+                                            str(link_error),
+                                        )
+                                upload_status.write(f"✅ Uploaded {total_upload} raw images and annotated site photos to Drive")
 
                             upload_status.write("📤 Uploading report and exports to Drive...")
                             _set_sidebar_activity(
                                 "Uploading report to Google Drive",
                                 "Uploading generated report and export files.",
                             )
+                            site_link_source = st.session_state.candidate_sites if st.session_state.candidate_sites else st.session_state.processed_sites
+                            try:
+                                reporter.append_drive_photo_links(report_path, {}, site_link_source)
+                            except Exception as link_error:
+                                _set_sidebar_activity(
+                                    "Drive photo links not added",
+                                    str(link_error),
+                                )
                             report_drive.upload_file(
                                 report_path,
                                 st.session_state.get("reports_folder_id") or st.session_state.get("client_folder_id"),
@@ -2924,7 +3030,8 @@ with tab1:
                                     pass
 
                             if st.session_state.get("client_folder_id"):
-                                st.session_state.drive_folder_url = f"https://drive.google.com/drive/folders/{st.session_state.client_folder_id}"
+                                st.session_state.client_folder_url = f"https://drive.google.com/drive/folders/{st.session_state.client_folder_id}"
+                                st.session_state.drive_folder_url = st.session_state.client_folder_url
 
                             upload_status.update(label="Report uploaded successfully!", state="complete", expanded=False)
                             _set_sidebar_activity(

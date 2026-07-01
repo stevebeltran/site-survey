@@ -202,6 +202,157 @@ def _add_report_footer(doc):
         pass
 
 
+def _add_hyperlink(paragraph, text, url):
+    """Add a clickable hyperlink to a docx paragraph."""
+    part = paragraph.part
+    r_id = part.relate_to(
+        url,
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink",
+        is_external=True,
+    )
+
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), r_id)
+
+    new_run = OxmlElement("w:r")
+    r_pr = OxmlElement("w:rPr")
+
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "0563C1")
+    r_pr.append(color)
+
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    r_pr.append(underline)
+
+    new_run.append(r_pr)
+    text_elem = OxmlElement("w:t")
+    text_elem.text = text
+    new_run.append(text_elem)
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
+    return hyperlink
+
+
+def _site_label(site, idx):
+    if isinstance(site, dict):
+        return (
+            site.get("site_name")
+            or site.get("folder_name")
+            or site.get("site_id")
+            or f"Site {idx}"
+        )
+
+    identity = getattr(site, "identity", None)
+    if identity is not None:
+        return (
+            getattr(identity, "site_name", None)
+            or getattr(identity, "site_id", None)
+            or f"Site {idx}"
+        )
+
+    return f"Site {idx}"
+
+
+def _site_address(site):
+    if isinstance(site, dict):
+        return site.get("address") or site.get("site_address") or ""
+
+    identity = getattr(site, "identity", None)
+    if identity is not None:
+        return getattr(identity, "site_address", "") or ""
+
+    return ""
+
+
+def _site_photos(site):
+    if isinstance(site, dict):
+        return site.get("images", []) or []
+
+    return getattr(site, "photos", []) or []
+
+
+def _photo_lookup_keys(photo):
+    keys = []
+    if isinstance(photo, dict):
+        for field in ("filename", "path", "dest_path", "photo_id", "file_path"):
+            value = photo.get(field)
+            if value:
+                keys.append(os.path.basename(str(value)))
+                keys.append(str(value))
+    else:
+        for field in ("photo_id", "file_path"):
+            value = getattr(photo, field, None)
+            if value:
+                keys.append(os.path.basename(str(value)))
+                keys.append(str(value))
+    return [key for key in keys if key]
+
+
+def append_drive_photo_links(report_path, photo_links_by_name, site_data_list=None):
+    """Append a Drive links section to an already-rendered DOCX report."""
+    if not report_path or not os.path.exists(report_path):
+        raise FileNotFoundError(f"Report not found: {report_path}")
+
+    photo_links_by_name = photo_links_by_name or {}
+    if not photo_links_by_name and not site_data_list:
+        return report_path
+
+    doc = Document(report_path)
+    if any((p.text or "").strip() == "Drive Photo Links" for p in doc.paragraphs):
+        return report_path
+
+    doc.add_page_break()
+    doc.add_heading("Drive Photo Links", level=1)
+    doc.add_paragraph("Open the uploaded survey photos in Google Drive using the links below.")
+
+    sites = site_data_list or []
+    if sites:
+        for idx, site in enumerate(sites, start=1):
+            site_label = _site_label(site, idx)
+            site_address = _site_address(site)
+            photos = [
+                p for p in _site_photos(site)
+                if (p.get("selected_for_report", True) if isinstance(p, dict) else getattr(p, "selected_for_report", True))
+            ]
+            site_header = doc.add_paragraph()
+            site_header.add_run(f"{site_label}").bold = True
+            if site_address:
+                site_header.add_run(f" - {site_address}")
+
+            for photo in photos:
+                link = None
+                if isinstance(photo, dict) and photo.get("drive_url"):
+                    link = photo["drive_url"]
+                for key in _photo_lookup_keys(photo):
+                    if key in photo_links_by_name:
+                        link = photo_links_by_name[key]
+                        break
+                if not link:
+                    continue
+
+                if isinstance(photo, dict):
+                    photo_name = (
+                        photo.get("filename")
+                        or os.path.basename(photo.get("path", ""))
+                        or os.path.basename(photo.get("dest_path", ""))
+                    )
+                else:
+                    photo_name = getattr(photo, "photo_id", "") or os.path.basename(getattr(photo, "file_path", ""))
+
+                p = doc.add_paragraph()
+                p.add_run(f"{photo_name}: ")
+                _add_hyperlink(p, "Open in Google Drive", link)
+    else:
+        for photo_name, link in sorted(photo_links_by_name.items()):
+            p = doc.add_paragraph()
+            p.add_run(f"{photo_name}: ")
+            _add_hyperlink(p, "Open in Google Drive", link)
+
+    doc.save(report_path)
+    return report_path
+
+
 def _set_cell_shading(cell, fill):
     tc_pr = cell._tc.get_or_add_tcPr()
     shd = OxmlElement("w:shd")
@@ -762,6 +913,22 @@ def _infer_city_state(site_data_list):
     return None, None
 
 
+def _infer_boundary_label(site_data_list):
+    """Infer the boundary name and mode for a site set."""
+    if not site_data_list:
+        return None, None
+
+    for site in site_data_list:
+        mode = (site.get("jurisdiction_mode") or "").strip().lower()
+        label = (site.get("jurisdiction_name") or "").strip()
+        state = (site.get("state") or "").strip()
+        if mode in {"county", "parish"} and label:
+            return label, state or None
+
+    city, state = _infer_city_state(site_data_list)
+    return city, state
+
+
 def _geojson_outer_rings(geometry):
     """Return outer rings from a GeoJSON polygon or multipolygon."""
     if not geometry:
@@ -984,9 +1151,9 @@ def draw_styled_map(site_data_list, output_map_path):
         img.save(output_map_path)
         return output_map_path
 
-    city, state = _infer_city_state(valid_sites)
+    boundary_name, state = _infer_boundary_label(valid_sites)
     site_labels = _map_site_labels(valid_sites)
-    boundary = query_city_boundary(city, state) if city else None
+    boundary = query_city_boundary(boundary_name, state) if boundary_name else None
 
     ring_radius_m = 3218.69
     boundary_rings = _geojson_outer_rings(boundary)
@@ -1118,7 +1285,10 @@ def draw_styled_map(site_data_list, output_map_path):
         )
         draw.text((label_x + 12, label_y + 9), label, fill="#16324f", font=label_font)
 
-    location_text = f"{city}, {state}" if city and state else city or "Survey Area"
+    if boundary_name and state:
+        location_text = f"{boundary_name}, {state}"
+    else:
+        location_text = boundary_name or "Survey Area"
     draw.text((40, 30), "DFR SITE MAP", fill="#ffffff", font=title_font)
     draw.text(
         (40, 76),
@@ -1680,6 +1850,11 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
         customer_info["report_date"] = _format_report_date(survey_date)
     report_date = customer_info.get("report_date", _format_report_date(survey_date))
     surveyor = customer_info.get("surveyor", "")
+    display_agency = (
+        customer_info.get("jurisdiction_name")
+        or customer_info.get("agency_name")
+        or ""
+    )
         
     p_title = doc.add_paragraph()
     p_title.alignment = 1
@@ -1692,7 +1867,7 @@ def generate_word_report(site_data_list, output_filepath, customer_info=None, dr
     p_agency = doc.add_paragraph()
     p_agency.alignment = 1
     agency_run = p_agency.add_run(
-        f"Agency: {customer_info.get('agency_name')}\n"
+        f"Agency: {display_agency}\n"
         f"Survey Date: {report_date}\n"
         f"Surveyor: {surveyor}"
     )

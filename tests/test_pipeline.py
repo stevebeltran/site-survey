@@ -252,6 +252,43 @@ class PipelineTests(unittest.TestCase):
 
             self.assertTrue(out_path.exists())
 
+    def test_process_and_organize_images_uses_parish_agency_label(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            source_dir = tmp_path / "source"
+            output_dir = tmp_path / "output"
+            source_dir.mkdir()
+
+            image_paths = []
+            for idx in range(5):
+                image_path = source_dir / f"parish_upload_{idx + 1}.jpg"
+                Image.new("RGB", (100, 100), color="blue").save(image_path)
+                image_paths.append(image_path)
+
+            original_extract = processor.extract_exif_gps
+            original_reverse_geocode = processor.reverse_geocode
+            try:
+                processor.extract_exif_gps = lambda path: (
+                    30.0,
+                    -90.0,
+                    datetime.datetime(2026, 6, 15, 12, 0, 0),
+                    25.0,
+                )
+                processor.reverse_geocode = lambda lat, lon: "100 Main St, Baton Rouge, East Baton Rouge Parish, Louisiana, United States"
+
+                site_data = processor.process_and_organize_images(
+                    str(source_dir),
+                    str(output_dir),
+                    image_paths=[str(path) for path in image_paths],
+                    agency_jurisdiction_mode="parish",
+                )
+            finally:
+                processor.extract_exif_gps = original_extract
+                processor.reverse_geocode = original_reverse_geocode
+
+            self.assertEqual(len(site_data), 1)
+            self.assertEqual(site_data[0]["agency_name"], "East Baton Rouge Parish Sheriff's Office")
+
 
 class TestBubblePlacement(unittest.TestCase):
     """Tests for smart bubble placement in engineering drawings."""

@@ -471,6 +471,68 @@ def extract_city_from_address(full_address):
     return None
 
 
+def _normalize_agency_jurisdiction(jurisdiction_mode):
+    """Normalize the agency naming mode to one of the supported labels."""
+    mode = str(jurisdiction_mode or "city").strip().lower()
+    if mode in {"county", "parish"}:
+        return mode
+    return "city"
+
+
+def extract_jurisdiction_from_address(full_address, jurisdiction_mode="city"):
+    """Extract the jurisdiction name used for agency labeling."""
+    mode = _normalize_agency_jurisdiction(jurisdiction_mode)
+    if not full_address:
+        return None
+
+    if mode == "city":
+        return extract_city_from_address(full_address)
+
+    suffix = mode
+
+    if hasattr(full_address, "county") and getattr(full_address, "county", None):
+        county_candidate = str(full_address.county).strip()
+        if county_candidate and suffix in county_candidate.lower():
+            return county_candidate
+
+    full_address = str(full_address).strip()
+    if full_address.startswith("Site Coordinate ("):
+        return None
+
+    parts = [part.strip() for part in full_address.split(",") if part.strip()]
+    for part in parts:
+        if suffix in part.lower():
+            return part
+
+    return None
+
+
+def build_agency_name_from_address(full_address, jurisdiction_mode="city"):
+    """Build a label such as 'City Police Department' or 'County Sheriff's Office'."""
+    mode = _normalize_agency_jurisdiction(jurisdiction_mode)
+    location = extract_jurisdiction_from_address(full_address, mode)
+    if not location:
+        return None
+
+    location = str(location).strip()
+    if not location:
+        return None
+
+    suffix = "Police Department" if mode == "city" else "Sheriff's Office"
+    if location.lower().endswith(suffix.lower()):
+        return location
+
+    return f"{location} {suffix}"
+
+
+def build_agency_location_hint(full_address, jurisdiction_mode="city"):
+    """Return the jurisdiction label used for search and map hints."""
+    location = extract_jurisdiction_from_address(full_address, jurisdiction_mode)
+    if location:
+        return location
+    return extract_city_from_address(full_address)
+
+
 class GeoResult(str):
     """String subclass that carries structured city/state data from Nominatim.
 
@@ -478,10 +540,11 @@ class GeoResult(str):
     uses it, but also exposes .city and .state attributes extracted from
     Nominatim's structured address fields.
     """
-    def __new__(cls, address, city=None, state=None):
+    def __new__(cls, address, city=None, state=None, county=None):
         instance = super().__new__(cls, address)
         instance.city = city
         instance.state = state
+        instance.county = county
         return instance
 
 
@@ -504,7 +567,8 @@ def reverse_geocode(lat, lon):
                     city = raw_addr[key]
                     break
             state = raw_addr.get('state')
-            return GeoResult(location.address, city=city, state=state)
+            county = raw_addr.get('county') or raw_addr.get('parish')
+            return GeoResult(location.address, city=city, state=state, county=county)
     except (GeocoderTimedOut, GeocoderServiceError) as e:
         print(f"Geocoding service unavailable or timed out: {e}")
     except Exception as e:
@@ -605,7 +669,7 @@ def _derive_department_folder_name(full_address=None, agency_name=None):
     return f"{_sanitize_folder_name(base)}_{timestamp}"
 
 
-def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, progress_callback=None, image_paths=None, drive_manager=None, drive_output_folder_id=None, agency_name=None):
+def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, progress_callback=None, image_paths=None, drive_manager=None, drive_output_folder_id=None, agency_name=None, agency_jurisdiction_mode="city"):
     """
     Scan source_dir for images, cluster by GPS, reverse-geocode,
     create subdirectories in output_dir, copy files, and return structure.
@@ -622,6 +686,7 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
         drive_manager: Optional GoogleDriveManager instance for Drive upload
         drive_output_folder_id: Optional Google Drive folder ID for upload
         agency_name: Optional agency name for folder labeling
+        agency_jurisdiction_mode: city, county, or parish when deriving names
 
     Returns:
         list: site_data with structure:
@@ -629,7 +694,7 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
                 'site_id': 'SITE-001',
                 'address': 'Full reverse-geocoded address',
                 'city': 'Extracted city name or None',
-                'agency_name': '{City} Police Department or None',
+                'agency_name': '{City} Police Department or {County/Parish} Sheriff's Office or None',
                 'latitude': float,
                 'longitude': float,
                 'images': [list of image metadata]
@@ -689,17 +754,19 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
     clusters = [c for c in clusters if len(c) >= MIN_SITE_PHOTOS]
 
     site_data = []
-    # Extract and validate city from first cluster's location to ensure folder name is clean
+    agency_jurisdiction_mode = _normalize_agency_jurisdiction(agency_jurisdiction_mode)
+
+    # Extract and validate location from first cluster's location to ensure folder name is clean
     first_location_address = reverse_geocode(clusters[0][0]["lat"], clusters[0][0]["lon"]) if clusters else None
-    validated_city = extract_city_from_address(first_location_address) if first_location_address else None
-    # Use validated city for folder name if agency_name is unvalidated (from detector)
+    derived_agency_name = build_agency_name_from_address(first_location_address, agency_jurisdiction_mode) if first_location_address else None
+    # Use the derived label for folder name if agency_name is unvalidated (from detector)
     folder_agency_name = agency_name
-    if not agency_name and validated_city:
-        folder_agency_name = f"{validated_city} Police Department"
-    elif agency_name and validated_city:
+    if not agency_name and derived_agency_name:
+        folder_agency_name = derived_agency_name
+    elif agency_name and derived_agency_name:
         # If agency_name contains amenity keywords, prefer validated city
         if any(word in agency_name.lower().split() for word in ['police', 'fire', 'way', 'drive', 'street']):
-            folder_agency_name = f"{validated_city} Police Department"
+            folder_agency_name = derived_agency_name
 
     batch_folder_name = _derive_department_folder_name(
         full_address=first_location_address,
@@ -749,7 +816,7 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
         # Extract city from full address; use caller-provided agency name if available
         # Use extract_city_from_address to validate Nominatim city against amenity/street keywords
         city = extract_city_from_address(full_address)
-        site_agency = agency_name or (f"{city} Police Department" if city else None)
+        site_agency = agency_name or build_agency_name_from_address(full_address, agency_jurisdiction_mode)
 
         site_data.append({
             'site_id': f"SITE-{idx+1:03d}",
@@ -758,6 +825,8 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
             'batch_folder_path': batch_folder,
             'address': full_address,
             'city': city,
+            'jurisdiction_name': build_agency_location_hint(full_address, agency_jurisdiction_mode),
+            'jurisdiction_mode': agency_jurisdiction_mode,
             'agency_name': site_agency,
             'latitude': center_lat,
             'longitude': center_lon,
@@ -802,11 +871,14 @@ def process_and_organize_images(source_dir, output_dir, radius_meters=90.0, prog
                             img['dest_path'],
                             drive_upload_dir,
                         )
-                        drive_manager.upload_file(
+                        file_id = drive_manager.upload_file(
                             upload_path,
                             drive_site_folder_id,
                             file_name=upload_name,
                         )
+                        if file_id:
+                            img['drive_file_id'] = file_id
+                            img['drive_url'] = f"https://drive.google.com/file/d/{file_id}/view?usp=drive_link"
         except ValueError as e:
             print(f"Drive upload error: {e}")
         except Exception as e:

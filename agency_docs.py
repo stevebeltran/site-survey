@@ -138,11 +138,18 @@ def fetch_agency_docs_parallel(dept_name: str, dept_domain: str, session_state: 
             return []
 
     # Run lookups in parallel with ThreadPoolExecutor
+    from streamlit.runtime.scriptrunner import get_script_run_ctx, add_script_run_ctx
+    ctx = get_script_run_ctx()
+
+    def _run_with_ctx(func):
+        add_script_run_ctx(ctx=ctx)
+        return func()
+
     with ThreadPoolExecutor(max_workers=3) as executor:
         # Submit all tasks
-        future_gmail = executor.submit(fetch_gmail)
-        future_drive = executor.submit(fetch_drive)
-        future_calendar = executor.submit(fetch_calendar)
+        future_gmail = executor.submit(_run_with_ctx, fetch_gmail)
+        future_drive = executor.submit(_run_with_ctx, fetch_drive)
+        future_calendar = executor.submit(_run_with_ctx, fetch_calendar)
 
         # Collect results as they complete (with 15-second timeout per task)
         futures = {

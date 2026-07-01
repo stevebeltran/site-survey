@@ -3,7 +3,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
-from processor import extract_city_from_address
+from processor import extract_city_from_address, build_agency_name_from_address, extract_jurisdiction_from_address, build_agency_location_hint
 
 
 class TestExtractCityFromAddress:
@@ -79,6 +79,31 @@ class TestAgencyNameGeneration:
         city = None
         agency_name = f"{city} Police Department" if city else None
         assert agency_name is None
+
+    def test_agency_name_from_county(self):
+        """Generate sheriff's office name from a county address."""
+        address = "100 Main St, Lansing, Ingham County, Michigan, United States"
+        agency_name = build_agency_name_from_address(address, "county")
+        assert agency_name == "Ingham County Sheriff's Office"
+
+    def test_agency_name_from_parish(self):
+        """Generate sheriff's office name from a parish address."""
+        address = "100 Main St, Baton Rouge, East Baton Rouge Parish, Louisiana, United States"
+        agency_name = build_agency_name_from_address(address, "parish")
+        assert agency_name == "East Baton Rouge Parish Sheriff's Office"
+
+    def test_extract_jurisdiction_from_address_supports_county_and_parish(self):
+        """Extract the jurisdiction component used by the new naming mode."""
+        county_address = "123 Main St, Lansing, Ingham County, Michigan, United States"
+        parish_address = "456 Main St, Baton Rouge, East Baton Rouge Parish, Louisiana, United States"
+
+        assert extract_jurisdiction_from_address(county_address, "county") == "Ingham County"
+        assert extract_jurisdiction_from_address(parish_address, "parish") == "East Baton Rouge Parish"
+
+    def test_build_agency_location_hint_prefers_jurisdiction(self):
+        """Return county/parish names for map and search hints."""
+        parish_address = "456 Main St, Baton Rouge, East Baton Rouge Parish, Louisiana, United States"
+        assert build_agency_location_hint(parish_address, "parish") == "East Baton Rouge Parish"
 
 
 class TestProcessAndOrganizeImages:

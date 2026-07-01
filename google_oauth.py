@@ -69,6 +69,7 @@ def _load_token_from_disk():
             st.session_state[_EMAIL_KEY] = email
     except Exception:
         _log.warning("Failed to load OAuth token from %s", _TOKEN_FILE, exc_info=True)
+        _delete_token_file()
 
 
 def _delete_token_file():

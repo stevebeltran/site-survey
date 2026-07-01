@@ -10,6 +10,7 @@ from site_model import (
     NetworkInfo, RFInfo, FlightOps, StructuralInfo, AccessInfo,
 )
 from reporter import generate_candidate_site_report
+from reporter import append_drive_photo_links
 
 
 def _make_candidate(site_id="TEST_001", name="Police HQ", n_photos=3):
@@ -122,5 +123,43 @@ class TestDynamicReport:
                  patch("reporter._build_tile_basemap", return_value=(basemap, 13)):
                 result = generate_candidate_site_report(sites, output_path, customer_info=customer_info)
             assert os.path.exists(result)
+        finally:
+            os.unlink(output_path)
+
+    def test_append_drive_photo_links_adds_section(self):
+        sites = [_make_candidate()]
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as f:
+            output_path = f.name
+        try:
+            basemap = Image.new("RGBA", (1332, 714), color=(240, 244, 248, 255))
+            with patch("reporter.query_city_boundary", return_value=None), \
+                 patch("reporter._build_tile_basemap", return_value=(basemap, 13)):
+                generate_candidate_site_report(sites, output_path)
+
+            append_drive_photo_links(
+                output_path,
+                {},
+                [
+                    {
+                        "site_id": "TEST_001",
+                        "site_name": "Police HQ",
+                        "address": "1412 S Blue Island Ave, Chicago, IL",
+                        "images": [
+                            {
+                                "filename": "IMG_0001.jpg",
+                                "drive_url": "https://drive.google.com/file/d/example/view?usp=drive_link",
+                                "selected_for_report": True,
+                            }
+                        ],
+                    }
+                ],
+            )
+
+            from docx import Document
+            doc = Document(output_path)
+            text = "\n".join([p.text for p in doc.paragraphs])
+            assert "Drive Photo Links" in text
+            assert "Open in Google Drive" in text
+            assert "IMG_0001.jpg" in text
         finally:
             os.unlink(output_path)
